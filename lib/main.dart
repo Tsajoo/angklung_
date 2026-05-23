@@ -158,7 +158,7 @@ class _MainPageState extends State<MainPage> {
         onDestinationSelected: (i) => setState(() => _pageIndex = i),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.music_note), label: 'Simulator'),
-          NavigationDestination(icon: Icon(Icons.remote), label: 'Remote'),
+          NavigationDestination(icon: Icon(Icons.settings_remote), label: 'Remote'),
           NavigationDestination(
               icon: Icon(Icons.fiber_manual_record), label: 'Record'),
         ],
