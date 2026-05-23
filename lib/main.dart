@@ -1,879 +1,614 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/services.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+void main() => runApp(const AngklungApp());
 
-  try {
-    await Firebase.initializeApp(
-      options: const FirebaseOptions(
-        apiKey: "AIzaSyC-siZ2Z3VQU3bbMjsfflauRzZRdjfiEKA",
-        appId: "1:25429940980:ios:45d0365544b4624c755ca1",
-        messagingSenderId: "25429940980",
-        projectId: "biogas11",
-        databaseURL:
-            "https://biogas11-default-rtdb.asia-southeast1.firebasedatabase.app",
-        storageBucket: "biogas11.firebasestorage.app",
-      ),
-    ).timeout(
-      const Duration(seconds: 10),
-      onTimeout: () =>
-          throw Exception("Firebase init timed out — check network / ATS"),
-    );
-
-    FirebaseDatabase.instance.setPersistenceEnabled(true);
-    FirebaseDatabase.instance.ref('realtime').keepSynced(true);
-    FirebaseDatabase.instance.ref('history').keepSynced(true);
-    FirebaseDatabase.instance.ref('config').keepSynced(true);
-  } catch (e) {
-    runApp(MaterialApp(
-      home: Scaffold(
-        backgroundColor: const Color(0xFFF5F0EB),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Text(
-              "Startup Error:\n$e",
-              style: const TextStyle(
-                  color: Color(0xFFE07C7C),
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600),
-              textAlign: TextAlign.center,
-            ),
-          ),
-        ),
-      ),
-    ));
-    return;
-  }
-
-  runApp(const BiogasApp());
-}
-
-// ── Pastel colour palette ────────────────────────────────────────────────────
-class AppColors {
-  static const bg         = Color(0xFFF7F4F0);
-  static const card       = Color(0xFFFFFFFF);
-  static const green      = Color(0xFF7EC8A4);
-  static const greenLight = Color(0xFFD6F0E4);
-  static const red        = Color(0xFFE8857A);
-  static const redLight   = Color(0xFFFCE0DE);
-  static const blue       = Color(0xFF85B4D4);
-  static const blueLight  = Color(0xFFD6EAF7);
-  static const peach      = Color(0xFFF5C49A);
-  static const peachLight = Color(0xFFFFF0E0);
-  static const text       = Color(0xFF3A3A3A);
-  static const textLight  = Color(0xFF8A8A8A);
-  static const divider    = Color(0xFFEAE6E1);
-}
-
-class BiogasApp extends StatelessWidget {
-  const BiogasApp({super.key});
+class AngklungApp extends StatelessWidget {
+  const AngklungApp({super.key});
 
   @override
   Widget build(BuildContext context) {
+    // Force landscape
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+
     return MaterialApp(
-      title: 'Biogas Monitor',
+      title: 'Angklung IoT',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        scaffoldBackgroundColor: AppColors.bg,
-        fontFamily: 'SF Pro Display',
-        colorScheme: ColorScheme.light(
-          primary: AppColors.green,
-          surface: AppColors.card,
-        ),
-        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-          backgroundColor: AppColors.card,
-          selectedItemColor: AppColors.green,
-          unselectedItemColor: AppColors.textLight,
-          elevation: 0,
-          type: BottomNavigationBarType.fixed,
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFF8BBD0),
+          brightness: Brightness.light,
         ),
       ),
-      home: const MainScreen(),
+      home: const SetupGate(),
     );
   }
 }
 
-// ── Main screen ──────────────────────────────────────────────────────────────
-class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+// ---------------------------------------------------------------------------
+// Setup gate – first‑time Firebase URL entry
+// ---------------------------------------------------------------------------
+class SetupGate extends StatefulWidget {
+  const SetupGate({super.key});
   @override
-  State<MainScreen> createState() => _MainScreenState();
+  State<SetupGate> createState() => _SetupGateState();
 }
 
-class _MainScreenState extends State<MainScreen> {
-  int _currentIndex = 0;
+class _SetupGateState extends State<SetupGate> {
+  bool? configured;
 
-  final List<Widget> _tabs = const [
-    RealtimeTab(),
-    HistoryTab(),
-    GraphTab(),
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _checkConfig();
+  }
 
-  final List<String> _titles = ['Live Sensors', 'History', 'Graph'];
+  Future<void> _checkConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    final url = prefs.getString('firebase_db_url') ?? '';
+    setState(() => configured = url.isNotEmpty);
+  }
+
+  void _onConfigured() => setState(() => configured = true);
+
+  @override
+  Widget build(BuildContext context) {
+    if (configured == null) return const SizedBox.shrink();
+    if (!configured!) return SetupScreen(onDone: _onConfigured);
+    return const MainPage();
+  }
+}
+
+class SetupScreen extends StatefulWidget {
+  final VoidCallback onDone;
+  const SetupScreen({super.key, required this.onDone});
+
+  @override
+  State<SetupScreen> createState() => _SetupScreenState();
+}
+
+class _SetupScreenState extends State<SetupScreen> {
+  final _controller = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+
+  Future<void> _save() async {
+    if (_formKey.currentState!.validate()) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('firebase_db_url', _controller.text.trim());
+      widget.onDone();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.bg,
-      appBar: AppBar(
-        backgroundColor: AppColors.bg,
-        elevation: 0,
-        centerTitle: false,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _titles[_currentIndex],
-              style: const TextStyle(
-                color: AppColors.text,
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.5,
-              ),
-            ),
-            const Text(
-              'Biogas Monitor',
-              style: TextStyle(
-                color: AppColors.textLight,
-                fontSize: 12,
-                fontWeight: FontWeight.w400,
-              ),
-            ),
-          ],
-        ),
-      ),
-      body: _tabs[_currentIndex],
-      bottomNavigationBar: Container(
-        decoration: const BoxDecoration(
-          color: AppColors.card,
-          border: Border(top: BorderSide(color: AppColors.divider, width: 1)),
-        ),
-        child: SafeArea(
-          child: BottomNavigationBar(
-            currentIndex: _currentIndex,
-            onTap: (i) => setState(() => _currentIndex = i),
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            items: const [
-              BottomNavigationBarItem(
-                  icon: Icon(Icons.sensors_outlined),
-                  activeIcon: Icon(Icons.sensors),
-                  label: 'Live'),
-              BottomNavigationBarItem(
-                  icon: Icon(Icons.history_outlined),
-                  activeIcon: Icon(Icons.history),
-                  label: 'History'),
-              BottomNavigationBarItem(
-                  icon: Icon(Icons.show_chart_outlined),
-                  activeIcon: Icon(Icons.show_chart),
-                  label: 'Graph'),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ── Shared helpers ───────────────────────────────────────────────────────────
-double _parse(dynamic value) {
-  if (value == null) return 0.0;
-  if (value is int) return value.toDouble();
-  if (value is double) return value;
-  if (value is String) return double.tryParse(value) ?? 0.0;
-  return 0.0;
-}
-
-// ── 1. Realtime Tab ──────────────────────────────────────────────────────────
-class RealtimeTab extends StatelessWidget {
-  const RealtimeTab({super.key});
-
-  void _editThreshold(BuildContext context, String key, double current) {
-    final ctrl = TextEditingController(text: current.toStringAsFixed(1));
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppColors.card,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(
-          left: 24,
-          right: 24,
-          top: 24,
-          bottom: MediaQuery.of(ctx).viewInsets.bottom + 32,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppColors.divider,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Text('Edit Threshold',
-                style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.text)),
-            const SizedBox(height: 4),
-            Text(key,
-                style: const TextStyle(
-                    fontSize: 13, color: AppColors.textLight)),
-            const SizedBox(height: 16),
-            TextField(
-              controller: ctrl,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              autofocus: true,
-              style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.text),
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: AppColors.bg,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 14),
-              ),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.green,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                onPressed: () {
-                  final v = double.tryParse(ctrl.text);
-                  if (v != null) {
-                    FirebaseDatabase.instance
-                        .ref('config')
-                        .update({key: v});
-                  }
-                  Navigator.pop(ctx);
-                },
-                child: const Text('Save',
-                    style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _sensorCard(
-    BuildContext context, {
-    required String title,
-    required String unit,
-    required double value,
-    required double threshold,
-    required String configKey,
-    required Color color,
-    required Color bgColor,
-    required IconData icon,
-  }) {
-    final bool danger = value > threshold;
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          )
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Header row
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: bgColor,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(icon, color: color, size: 20),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(title,
-                    style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.text)),
-              ),
-              // Status pill
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                decoration: BoxDecoration(
-                  color: danger ? AppColors.redLight : AppColors.greenLight,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  danger ? 'BAHAYA' : 'AMAN',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: danger ? AppColors.red : AppColors.green,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          // Big value
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                value.toStringAsFixed(1),
-                style: const TextStyle(
-                  fontSize: 42,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.text,
-                  letterSpacing: -1,
-                  height: 1,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text(unit,
-                    style: const TextStyle(
-                        fontSize: 16,
-                        color: AppColors.textLight,
-                        fontWeight: FontWeight.w500)),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Container(height: 1, color: AppColors.divider),
-          const SizedBox(height: 12),
-          // Threshold row
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.tune_outlined,
-                      size: 14, color: AppColors.textLight),
-                  const SizedBox(width: 4),
-                  Text(
-                    'Threshold: ${threshold.toStringAsFixed(1)} $unit',
-                    style: const TextStyle(
-                        fontSize: 13, color: AppColors.textLight),
-                  ),
-                ],
-              ),
-              GestureDetector(
-                onTap: () => _editThreshold(context, configKey, threshold),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: AppColors.bg,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.edit_outlined,
-                          size: 13, color: AppColors.textLight),
-                      SizedBox(width: 4),
-                      Text('Edit',
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textLight,
-                              fontWeight: FontWeight.w500)),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<DatabaseEvent>(
-      stream: FirebaseDatabase.instance.ref('config').onValue,
-      builder: (context, configSnap) {
-        return StreamBuilder<DatabaseEvent>(
-          stream: FirebaseDatabase.instance.ref('realtime').onValue,
-          builder: (context, realtimeSnap) {
-            if (!configSnap.hasData || !realtimeSnap.hasData) {
-              return const Center(
-                child: CircularProgressIndicator(
-                    color: AppColors.green, strokeWidth: 2),
-              );
-            }
-
-            final cfg =
-                configSnap.data?.snapshot.value as Map<dynamic, dynamic>? ??
-                    {};
-            final rt =
-                realtimeSnap.data?.snapshot.value as Map<dynamic, dynamic>? ??
-                    {};
-
-            return ListView(
-              padding: const EdgeInsets.only(top: 8, bottom: 24),
-              children: [
-                _sensorCard(
-                  context,
-                  title: 'Temperature',
-                  unit: '°C',
-                  value: _parse(rt['suhu']),
-                  threshold: _parse(cfg['suhuThreshold']),
-                  configKey: 'suhuThreshold',
-                  color: AppColors.peach,
-                  bgColor: AppColors.peachLight,
-                  icon: Icons.thermostat_outlined,
-                ),
-                _sensorCard(
-                  context,
-                  title: 'Gas (MQ Sensor)',
-                  unit: 'PPM',
-                  value: _parse(rt['ppm']),
-                  threshold: _parse(cfg['ppmThreshold']),
-                  configKey: 'ppmThreshold',
-                  color: AppColors.blue,
-                  bgColor: AppColors.blueLight,
-                  icon: Icons.air_outlined,
-                ),
-                _sensorCard(
-                  context,
-                  title: 'pH Level',
-                  unit: 'pH',
-                  value: _parse(rt['ph']),
-                  threshold: _parse(cfg['phThreshold']),
-                  configKey: 'phThreshold',
-                  color: AppColors.green,
-                  bgColor: AppColors.greenLight,
-                  icon: Icons.science_outlined,
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-// ── 2. History Tab (with swipe to delete) ────────────────────────────────────
-class HistoryTab extends StatelessWidget {
-  const HistoryTab({super.key});
-
-  // Helper to delete a history entry with confirmation
-  void _confirmDelete(BuildContext context, String key) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete entry?'),
-        content: const Text('This action cannot be undone.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              FirebaseDatabase.instance.ref('history').child(key).remove();
-              Navigator.pop(ctx);
-            },
-            child: const Text('Delete', style: TextStyle(color: AppColors.red)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<DatabaseEvent>(
-      stream:
-          FirebaseDatabase.instance.ref('history').limitToLast(100).onValue,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(
-              child: CircularProgressIndicator(
-                  color: AppColors.green, strokeWidth: 2));
-        }
-
-        final map =
-            snapshot.data?.snapshot.value as Map<dynamic, dynamic>?;
-        if (map == null) {
-          return const Center(
+      backgroundColor: const Color(0xFFFCE4EC),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 40),
+          child: Form(
+            key: _formKey,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.history_outlined,
-                    size: 48, color: AppColors.textLight),
-                SizedBox(height: 12),
-                Text('No history yet',
-                    style: TextStyle(
-                        color: AppColors.textLight, fontSize: 15)),
+                const Text('Welcome to Angklung IoT',
+                    style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 20),
+                TextFormField(
+                  controller: _controller,
+                  decoration: const InputDecoration(
+                    labelText: 'Firebase Realtime Database URL',
+                    hintText: 'https://your-project.firebaseio.com',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (v) =>
+                      (v == null || v.trim().isEmpty) ? 'Required' : null,
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton.icon(
+                  onPressed: _save,
+                  icon: const Icon(Icons.save),
+                  label: const Text('Save & Continue'),
+                ),
               ],
             ),
-          );
-        }
-
-        final keys = map.keys.toList()
-          ..sort();
-        final reversed = keys.reversed.toList();
-
-        return ListView.separated(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          itemCount: reversed.length,
-          separatorBuilder: (_, __) => const SizedBox(height: 8),
-          itemBuilder: (context, index) {
-            final key = reversed[index];
-            final item = map[key] as Map<dynamic, dynamic>;
-            final sensor = item['sensorType'] ?? 'Unknown';
-
-            Color dotColor = AppColors.green;
-            if (sensor.toString().toLowerCase().contains('suhu')) {
-              dotColor = AppColors.peach;
-            } else if (sensor.toString().toLowerCase().contains('ppm') ||
-                sensor.toString().toLowerCase().contains('mq')) {
-              dotColor = AppColors.blue;
-            }
-
-            // Wrap card in Dismissible for swipe-to-delete
-            return Dismissible(
-              key: Key(key),
-              direction: DismissDirection.horizontal,
-              background: Container(
-                alignment: Alignment.centerLeft,
-                padding: const EdgeInsets.only(left: 20),
-                decoration: BoxDecoration(
-                  color: AppColors.red,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: const Icon(Icons.delete_outline,
-                    color: Colors.white, size: 24),
-              ),
-              secondaryBackground: Container(
-                alignment: Alignment.centerRight,
-                padding: const EdgeInsets.only(right: 20),
-                decoration: BoxDecoration(
-                  color: AppColors.red,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: const Icon(Icons.delete_outline,
-                    color: Colors.white, size: 24),
-              ),
-              confirmDismiss: (_) {
-                _confirmDelete(context, key);
-                return Future.value(false); // we handle deletion manually via dialog
-              },
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.card,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.03),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
-                    )
-                  ],
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 10,
-                      height: 10,
-                      decoration: BoxDecoration(
-                        color: dotColor,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Triggered by: $sensor',
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.text,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Temp: ${item['suhu'] ?? '-'}°C  ·  PPM: ${item['ppm'] ?? '-'}  ·  pH: ${item['ph'] ?? '-'}',
-                            style: const TextStyle(
-                                fontSize: 12, color: AppColors.textLight),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+          ),
+        ),
+      ),
     );
   }
 }
 
-// ── 3. Graph Tab (with interactive touch tooltips) ───────────────────────────
-class GraphTab extends StatefulWidget {
-  const GraphTab({super.key});
+// ---------------------------------------------------------------------------
+// Main navigation (3 pages)
+// ---------------------------------------------------------------------------
+class MainPage extends StatefulWidget {
+  const MainPage({super.key});
   @override
-  State<GraphTab> createState() => _GraphTabState();
+  State<MainPage> createState() => _MainPageState();
 }
 
-class _GraphTabState extends State<GraphTab> {
-  String _metric = 'suhu';
+class _MainPageState extends State<MainPage> {
+  int _pageIndex = 0;
 
-  static const _metrics = [
-    _MetricOption('suhu',  'Temp °C',  AppColors.peach,  AppColors.peachLight),
-    _MetricOption('ppm',   'Gas PPM',  AppColors.blue,   AppColors.blueLight),
-    _MetricOption('ph',    'pH',       AppColors.green,  AppColors.greenLight),
+  static const pages = [
+    AngklungSimulator(),
+    RemoteController(),
+    RecorderPage(),
   ];
 
   @override
   Widget build(BuildContext context) {
-    final selected = _metrics.firstWhere((m) => m.key == _metric);
+    return Scaffold(
+      body: IndexedStack(
+        index: _pageIndex,
+        children: pages,
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _pageIndex,
+        onDestinationSelected: (i) => setState(() => _pageIndex = i),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.music_note), label: 'Simulator'),
+          NavigationDestination(icon: Icon(Icons.remote), label: 'Remote'),
+          NavigationDestination(
+              icon: Icon(Icons.fiber_manual_record), label: 'Record'),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+Future<String> getDatabaseUrl() async {
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getString('firebase_db_url') ?? '';
+}
+
+// ---------------------------------------------------------------------------
+// 1. SIMULATOR – 8 notes (C‑C'), tap to play sound
+// ---------------------------------------------------------------------------
+class AngklungSimulator extends StatelessWidget {
+  const AngklungSimulator({super.key});
+
+  static const notes = ['C', 'D', 'E', 'F', 'G', 'A', 'B', "C'"];
+  static const colors = [
+    Color(0xFFF8BBD0), // pink
+    Color(0xFFE1BEE7), // lavender
+    Color(0xFFBBDEFB), // light blue
+    Color(0xFFC8E6C9), // mint
+    Color(0xFFFFF9C4), // lemon
+    Color(0xFFFFE0B2), // peach
+    Color(0xFFFFCDD2), // salmon
+    Color(0xFFD1C4E9), // lilac
+  ];
+
+  Future<void> _playNote(BuildContext context, String note) async {
+    final player = AudioPlayer();
+    await player.play(AssetSource('notes/$note.wav'));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final topRow = notes.sublist(0, 4);
+    final bottomRow = notes.sublist(4);
 
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        // Metric selector
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-          child: Row(
-            children: _metrics.map((m) {
-              final active = m.key == _metric;
-              return GestureDetector(
-                onTap: () => setState(() => _metric = m.key),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 180),
-                  margin: const EdgeInsets.only(right: 8),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: active ? m.color : AppColors.card,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: active
-                        ? [
-                            BoxShadow(
-                              color: m.color.withOpacity(0.3),
-                              blurRadius: 8,
-                              offset: const Offset(0, 3),
-                            )
-                          ]
-                        : [],
-                  ),
-                  child: Text(
-                    m.label,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: active ? Colors.white : AppColors.textLight,
-                    ),
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: topRow
+              .asMap()
+              .entries
+              .map((e) => NoteButton(
+                    note: e.value,
+                    color: colors[e.key],
+                    onTap: () => _playNote(context, e.value),
+                  ))
+              .toList(),
         ),
-        const SizedBox(height: 12),
-        // Chart
-        Expanded(
-          child: Container(
-            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            padding: const EdgeInsets.fromLTRB(12, 20, 20, 16),
-            decoration: BoxDecoration(
-              color: AppColors.card,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.04),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
-                )
-              ],
-            ),
-            child: StreamBuilder<DatabaseEvent>(
-              stream: FirebaseDatabase.instance
-                  .ref('history')
-                  .limitToLast(20)
-                  .onValue,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(
-                      child: CircularProgressIndicator(
-                          color: AppColors.green, strokeWidth: 2));
-                }
-
-                final map = snapshot.data?.snapshot.value
-                    as Map<dynamic, dynamic>?;
-                if (map == null || map.isEmpty) {
-                  return const Center(
-                    child: Text('No data yet',
-                        style: TextStyle(
-                            color: AppColors.textLight, fontSize: 14)),
-                  );
-                }
-
-                final sortedKeys = map.keys.toList()..sort();
-                final spots = <FlSpot>[];
-                for (var i = 0; i < sortedKeys.length; i++) {
-                  final item =
-                      map[sortedKeys[i]] as Map<dynamic, dynamic>;
-                  spots.add(FlSpot(i.toDouble(), _parse(item[_metric])));
-                }
-
-                return LineChart(
-                  LineChartData(
-                    // ★ Touch interaction
-                    lineTouchData: LineTouchData(
-                      enabled: true,
-                      touchTooltipData: LineTouchTooltipData(
-                        tooltipBgColor: AppColors.text.withOpacity(0.9),
-                        tooltipRoundedRadius: 8,
-                        tooltipPadding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 8),
-                        getTooltipItems: (touchedSpots) {
-                          return touchedSpots.map((spot) {
-                            final metricLabel = selected.label;
-                            return LineTooltipItem(
-                              '${spot.y.toStringAsFixed(1)} $metricLabel',
-                              const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 13,
-                              ),
-                            );
-                          }).toList();
-                        },
-                      ),
-                      touchCallback: (event, response) {
-                        // Optional: you could add haptic feedback here
-                      },
-                    ),
-                    gridData: FlGridData(
-                      show: true,
-                      drawVerticalLine: false,
-                      getDrawingHorizontalLine: (_) => FlLine(
-                        color: AppColors.divider,
-                        strokeWidth: 1,
-                      ),
-                    ),
-                    titlesData: const FlTitlesData(
-                      topTitles: AxisTitles(
-                          sideTitles: SideTitles(showTitles: false)),
-                      rightTitles: AxisTitles(
-                          sideTitles: SideTitles(showTitles: false)),
-                      bottomTitles: AxisTitles(
-                          sideTitles: SideTitles(showTitles: false)),
-                      leftTitles: AxisTitles(
-                        sideTitles: SideTitles(
-                          showTitles: true,
-                          reservedSize: 36,
-                          getTitlesWidget: _leftTitle,
-                        ),
-                      ),
-                    ),
-                    borderData: FlBorderData(show: false),
-                    lineBarsData: [
-                      LineChartBarData(
-                        spots: spots,
-                        isCurved: true,
-                        curveSmoothness: 0.35,
-                        color: selected.color,
-                        barWidth: 3,
-                        isStrokeCapRound: true,
-                        dotData: FlDotData(
-                          show: true,
-                          getDotPainter: (spot, _, __, ___) =>
-                              FlDotCirclePainter(
-                            radius: 4,
-                            color: AppColors.card,
-                            strokeWidth: 2,
-                            strokeColor: selected.color,
-                          ),
-                        ),
-                        belowBarData: BarAreaData(
-                          show: true,
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              selected.color.withOpacity(0.2),
-                              selected.color.withOpacity(0.0),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
+        const SizedBox(height: 20),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: bottomRow
+              .asMap()
+              .entries
+              .map((e) => NoteButton(
+                    note: e.value,
+                    color: colors[e.key + 4],
+                    onTap: () => _playNote(context, e.value),
+                  ))
+              .toList(),
         ),
       ],
     );
   }
 }
 
-Widget _leftTitle(double value, TitleMeta meta) {
-  return Text(
-    value.toInt().toString(),
-    style:
-        const TextStyle(fontSize: 10, color: AppColors.textLight),
-    textAlign: TextAlign.right,
-  );
+// ---------------------------------------------------------------------------
+// Note button widget (supports simple tap or press/release)
+// ---------------------------------------------------------------------------
+class NoteButton extends StatelessWidget {
+  final String note;
+  final Color color;
+  final VoidCallback? onTap;
+  final Function(bool)? onPressedChanged; // true = pressed, false = released
+
+  const NoteButton({
+    super.key,
+    required this.note,
+    required this.color,
+    this.onTap,
+    this.onPressedChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    Widget button = Material(
+      color: color,
+      borderRadius: BorderRadius.circular(20),
+      elevation: 4,
+      child: SizedBox(
+        width: 80,
+        height: 120,
+        child: Center(
+          child: Text(
+            note,
+            style: const TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if (onPressedChanged != null) {
+      return GestureDetector(
+        onTapDown: (_) => onPressedChanged?.call(true),
+        onTapUp: (_) => onPressedChanged?.call(false),
+        onTapCancel: () => onPressedChanged?.call(false),
+        child: button,
+      );
+    }
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: onTap,
+      child: button,
+    );
+  }
 }
 
-class _MetricOption {
-  final String key;
-  final String label;
-  final Color color;
-  final Color bgColor;
-  const _MetricOption(this.key, this.label, this.color, this.bgColor);
+// ---------------------------------------------------------------------------
+// 2. REMOTE – tap sends note to Firebase (for ESP32)
+// ---------------------------------------------------------------------------
+class RemoteController extends StatelessWidget {
+  const RemoteController({super.key});
+
+  Future<void> _sendNote(String note) async {
+    final url = await getDatabaseUrl();
+    if (url.isEmpty) return;
+    final uri = Uri.parse('$url/play/note.json');
+    await http.put(uri,
+        body: jsonEncode(
+            {'note': note, 'timestamp': DateTime.now().millisecondsSinceEpoch}));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final notes = AngklungSimulator.notes;
+    final colors = AngklungSimulator.colors;
+
+    return Column(
+      children: [
+        const SizedBox(height: 10),
+        const Text('Remote (ESP32)', style: TextStyle(fontSize: 18)),
+        const Spacer(),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: notes
+              .sublist(0, 4)
+              .asMap()
+              .entries
+              .map((e) => NoteButton(
+                    note: e.value,
+                    color: colors[e.key],
+                    onTap: () => _sendNote(e.value),
+                  ))
+              .toList(),
+        ),
+        const SizedBox(height: 20),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: notes
+              .sublist(4)
+              .asMap()
+              .entries
+              .map((e) => NoteButton(
+                    note: e.value,
+                    color: colors[e.key + 4],
+                    onTap: () => _sendNote(e.value),
+                  ))
+              .toList(),
+        ),
+        const Spacer(),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3. RECORDER – press & release, min duration 0.3s, auto‑rests, format [note,dur]
+// ---------------------------------------------------------------------------
+class RecorderPage extends StatefulWidget {
+  const RecorderPage({super.key});
+  @override
+  State<RecorderPage> createState() => _RecorderPageState();
+}
+
+class _RecorderPageState extends State<RecorderPage> {
+  bool _recording = false;
+  bool _paused = false;
+  Timer? _timer;
+  int _elapsedMs = 0;               // total recording time (ms)
+  int _countdown = 0;               // 3‑2‑1 before start
+  DateTime? _recordingStartTime;    // when recording really started
+
+  // Sequence of [noteIndex, duration] pairs (index 0 = rest, 1‑8 = notes)
+  List<List<dynamic>> _sequence = [];
+
+  // Currently held note info
+  String? _pressedNote;             // note name
+  DateTime? _pressTime;             // when the current note was pressed
+
+  // Last end time (used to calculate rests)
+  DateTime? _lastEventEndTime;      // end of last note/rest
+
+  final notes = AngklungSimulator.notes;
+  final colors = AngklungSimulator.colors;
+
+  static const double minDurationSec = 0.3;
+
+  void _startCountdown() {
+    _countdown = 3;
+    setState(() {});
+    Timer.periodic(const Duration(seconds: 1), (t) {
+      if (_countdown > 1) {
+        _countdown--;
+        setState(() {});
+      } else {
+        t.cancel();
+        _beginRecording();
+      }
+    });
+  }
+
+  void _beginRecording() {
+    _recording = true;
+    _paused = false;
+    _elapsedMs = 0;
+    _sequence = [];
+    _pressedNote = null;
+    _recordingStartTime = DateTime.now();
+    _lastEventEndTime = _recordingStartTime;  // start of silence
+
+    _timer = Timer.periodic(const Duration(milliseconds: 100), (t) {
+      if (!_paused) {
+        _elapsedMs = DateTime.now().difference(_recordingStartTime!).inMilliseconds;
+        setState(() {});
+      }
+    });
+    setState(() {});
+  }
+
+  void _pauseResume() {
+    if (_paused) {
+      // Resume
+      final now = DateTime.now();
+      // Adjust start so elapsed stays continuous
+      _recordingStartTime = now.subtract(Duration(milliseconds: _elapsedMs));
+      // We don't change _lastEventEndTime – gaps are computed relative to absolute times
+      _timer = Timer.periodic(const Duration(milliseconds: 100), (t) {
+        _elapsedMs = DateTime.now().difference(_recordingStartTime!).inMilliseconds;
+        setState(() {});
+      });
+      _paused = false;
+    } else {
+      // Pause
+      _paused = true;
+      _timer?.cancel();
+    }
+    setState(() {});
+  }
+
+  void _reset() {
+    _timer?.cancel();
+    _recording = false;
+    _paused = false;
+    _elapsedMs = 0;
+    _countdown = 0;
+    _sequence = [];
+    _pressedNote = null;
+    setState(() {});
+  }
+
+  void _stopAndSend() async {
+    // If a note is still pressed, finalise it
+    if (_pressedNote != null) {
+      _finaliseCurrentNote();
+    }
+
+    _timer?.cancel();
+    _recording = false;
+    setState(() {});
+
+    final url = await getDatabaseUrl();
+    if (url.isNotEmpty && _sequence.isNotEmpty) {
+      final uri = Uri.parse('$url/recordings.json');
+      await http.post(uri, body: jsonEncode(_sequence));
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Recording sent to Firebase')),
+        );
+      }
+    }
+  }
+
+  // Called when a note button is pressed or released
+  void _onNotePressState(String note, bool pressed) {
+    if (!_recording || _paused) {
+      // In non‑recording mode, just play the sound
+      if (pressed) {
+        AudioPlayer().play(AssetSource('notes/$note.wav'));
+      }
+      return;
+    }
+
+    if (pressed) {
+      // If another note is still held, finalise it first
+      if (_pressedNote != null && _pressedNote != note) {
+        _finaliseCurrentNote();
+      }
+      _pressedNote = note;
+      _pressTime = DateTime.now();
+    } else {
+      // Released the same note
+      if (_pressedNote == note) {
+        _finaliseCurrentNote();
+        _pressedNote = null;
+      }
+    }
+  }
+
+  // Converts the currently held note into a recorded entry, adding rest before it
+  void _finaliseCurrentNote() {
+    if (_pressedNote == null || _pressTime == null) return;
+
+    final noteIndex = notes.indexOf(_pressedNote!) + 1; // 1‑8
+    final pressTime = _pressTime!;
+    final now = DateTime.now();
+    double durationSec = (now.difference(pressTime).inMilliseconds) / 1000.0;
+    if (durationSec < minDurationSec) durationSec = minDurationSec;
+
+    // Calculate gap between last event end and this note's press
+    final gapSec = (pressTime.difference(_lastEventEndTime!).inMilliseconds) / 1000.0;
+    if (gapSec > 0.01) {
+      // Insert a rest (note 0) of that duration
+      _sequence.add([0, double.parse(gapSec.toStringAsFixed(2))]);
+    }
+
+    // Add the actual note
+    _sequence.add([noteIndex, double.parse(durationSec.toStringAsFixed(2))]);
+
+    // Update last event end time to when this note finishes
+    _lastEventEndTime = pressTime.add(Duration(milliseconds: (durationSec * 1000).round()));
+  }
+
+  String _formatMs(int ms) {
+    final sec = (ms / 1000).floor();
+    final min = (sec / 60).floor();
+    final remainSec = sec % 60;
+    return '${min.toString().padLeft(2, '0')}:${remainSec.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const SizedBox(height: 10),
+        // Timer display
+        Text(
+          _countdown > 0
+              ? 'Starting in $_countdown...'
+              : _formatMs(_elapsedMs),
+          style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold),
+        ),
+        // Recording controls
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (!_recording)
+              ElevatedButton.icon(
+                onPressed: _startCountdown,
+                icon: const Icon(Icons.fiber_manual_record, color: Colors.red),
+                label: const Text('Record'),
+              )
+            else ...[
+              ElevatedButton.icon(
+                onPressed: _pauseResume,
+                icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
+                label: Text(_paused ? 'Resume' : 'Pause'),
+              ),
+              const SizedBox(width: 10),
+              ElevatedButton.icon(
+                onPressed: _reset,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reset'),
+              ),
+              const SizedBox(width: 10),
+              ElevatedButton.icon(
+                onPressed: _stopAndSend,
+                icon: const Icon(Icons.stop),
+                label: const Text('Stop & Send'),
+              ),
+            ],
+          ],
+        ),
+        const Spacer(),
+        // Top row of notes (C D E F)
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: notes
+              .sublist(0, 4)
+              .asMap()
+              .entries
+              .map((e) => NoteButton(
+                    note: e.value,
+                    color: colors[e.key],
+                    onPressedChanged: (pressed) =>
+                        _onNotePressState(e.value, pressed),
+                  ))
+              .toList(),
+        ),
+        const SizedBox(height: 20),
+        // Bottom row (G A B C')
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: notes
+              .sublist(4)
+              .asMap()
+              .entries
+              .map((e) => NoteButton(
+                    note: e.value,
+                    color: colors[e.key + 4],
+                    onPressedChanged: (pressed) =>
+                        _onNotePressState(e.value, pressed),
+                  ))
+              .toList(),
+        ),
+        const Spacer(),
+        Text('Recorded events: ${_sequence.length}'),
+        const SizedBox(height: 10),
+      ],
+    );
+  }
 }
