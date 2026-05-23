@@ -1,5 +1,5 @@
-name: biogas_monitor
-description: Biogas monitoring app
+name: Angklung Iot
+description: App to Control Angklung from Internet
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -9,9 +9,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  firebase_core: ^2.32.0
-  firebase_database: ^10.5.0
-  fl_chart: ^0.66.0
+  audioplayers: ^6.0.0
+  http: ^1.1.0
+  shared_preferences: ^2.2.0
 
 flutter:
-  uses-material-design: true
+  assets:
+    - assets/notes/
