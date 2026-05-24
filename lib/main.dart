@@ -115,7 +115,7 @@ class _SetupGateState extends State<SetupGate> {
 }
 
 // ---------------------------------------------------------------------------
-// Setup / Settings screen – Firebase URL + Anthropic API key
+// Setup / Settings screen – Firebase URL + Gemini API key
 // ---------------------------------------------------------------------------
 class SetupScreen extends StatefulWidget {
   final VoidCallback onDone;
@@ -140,14 +140,14 @@ class _SetupScreenState extends State<SetupScreen> {
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
     _fbController.text = prefs.getString('firebase_db_url') ?? '';
-    _aiController.text = prefs.getString('anthropic_api_key') ?? '';
+    _aiController.text = prefs.getString('gemini_api_key') ?? '';
   }
 
   Future<void> _save() async {
     if (_formKey.currentState!.validate()) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('firebase_db_url', _fbController.text.trim());
-      await prefs.setString('anthropic_api_key', _aiController.text.trim());
+      await prefs.setString('gemini_api_key', _aiController.text.trim());
       widget.onDone();
     }
   }
@@ -199,8 +199,8 @@ class _SetupScreenState extends State<SetupScreen> {
                     controller: _aiController,
                     obscureText: _obscureKey,
                     decoration: InputDecoration(
-                      labelText: 'Anthropic API Key (for Song Converter)',
-                      hintText: 'sk-ant-...',
+                      labelText: 'Gemini API Key (for Song Converter)',
+                      hintText: 'AIzaSy...',
                       prefixIcon: const Icon(Icons.auto_awesome_outlined),
                       helperText: 'Optional – needed for YouTube → Sequence conversion',
                       border: const OutlineInputBorder(),
@@ -324,9 +324,9 @@ Future<String> getDatabaseUrl() async {
   return prefs.getString('firebase_db_url') ?? '';
 }
 
-Future<String> getAnthropicKey() async {
+Future<String> getGeminiKey() async {
   final prefs = await SharedPreferences.getInstance();
-  return prefs.getString('anthropic_api_key') ?? '';
+  return prefs.getString('gemini_api_key') ?? '';
 }
 
 /// Maps note label → Firebase key under /angklung/
@@ -1159,7 +1159,7 @@ class _CtrlButton extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// 5. SONG CONVERTER – YouTube URL → Claude AI → angklung sequence → Firebase
+// 5. SONG CONVERTER – YouTube URL → Gemini AI → angklung sequence → Firebase
 //
 // Sequence format: [[noteIndex, durationSeconds], ...]
 //   noteIndex: 0=rest, 1=C, 2=D, 3=E, 4=F, 5=G, 6=A, 7=B, 8=C'
@@ -1183,7 +1183,7 @@ class _SongConverterPageState extends State<SongConverterPage> {
   List<List<dynamic>>? _sequence;
   String? _savedId;
 
-  // ── Call Claude API with web_search tool to identify song + make sequence ──
+  // ── Call Gemini API with Google Search tool to identify song + make sequence ──
   Future<void> _convert() async {
     final ytUrl = _urlController.text.trim();
     if (ytUrl.isEmpty) {
@@ -1196,42 +1196,38 @@ class _SongConverterPageState extends State<SongConverterPage> {
       _error = null;
       _sequence = null;
       _savedId = null;
-      _statusMessage = 'Identifying song…';
+      _statusMessage = 'Identifying song via Gemini…';
     });
 
     try {
-      final apiKey = await getAnthropicKey();
+      final apiKey = await getGeminiKey();
       if (apiKey.isEmpty) {
         setState(() {
           _error =
-              'Anthropic API key not configured.\nGo to ⚙ Settings and add your sk-ant-... key.';
+              'Gemini API key not configured.\nGo to ⚙ Settings and add your AIza... key.';
         });
         return;
       }
 
-      // First call: identify the song + generate sequence
+      // First call: identify the song + generate sequence using Gemini with Google Search
       final response = await http.post(
-        Uri.parse('https://api.anthropic.com/v1/messages'),
+        Uri.parse(
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey'),
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
         },
         body: jsonEncode({
-          'model': 'claude-sonnet-4-20250514',
-          'max_tokens': 2000,
-          'tools': [
-            {'type': 'web_search_20250305', 'name': 'web_search'}
-          ],
-          'messages': [
+          'contents': [
             {
               'role': 'user',
-              'content': '''You are an expert angklung music transcriber.
+              'parts': [
+                {
+                  'text': '''You are an expert angklung music transcriber.
 
 YouTube URL: $ytUrl
 
 Your task:
-1. Use web_search to find the song title and artist from this YouTube URL (search the video ID or URL).
+1. Identify the song title and artist from this YouTube URL (search the video ID or URL).
 2. Look up the melody/notes of this song.
 3. Transcribe the MAIN MELODY (verse or chorus) into angklung notation.
 
@@ -1262,8 +1258,15 @@ Format:
 
 Example:
 [[3,0.5],[3,0.5],[5,1.0],[3,1.0],[4,0.5],[2,2.0],[0,0.5],[1,0.5],[2,0.5],[3,1.0]]'''
+                }
+              ]
             }
           ],
+          'tools': [
+            {
+              'googleSearch': {} // Enables Google Search grounding for accurate song lookups
+            }
+          ]
         }),
       );
 
@@ -1282,19 +1285,17 @@ Example:
 
       final data = jsonDecode(utf8.decode(response.bodyBytes))
           as Map<String, dynamic>;
-      final content = data['content'] as List<dynamic>;
 
-      // Grab the last text block (comes after any tool_use / tool_result blocks)
       String? rawText;
-      for (int i = content.length - 1; i >= 0; i--) {
-        final block = content[i] as Map<String, dynamic>;
-        if (block['type'] == 'text') {
-          rawText = block['text'] as String;
-          break;
-        }
+      try {
+        // Extract the text block from Gemini's response
+        rawText = data['candidates'][0]['content']['parts'][0]['text'] as String;
+      } catch (e) {
+        setState(() => _error = 'No valid text response from AI.');
+        return;
       }
 
-      if (rawText == null || rawText.isEmpty) {
+      if (rawText.isEmpty) {
         setState(() => _error = 'No text response from AI.');
         return;
       }
@@ -1663,3 +1664,5 @@ Example:
     );
   }
 }
+
+```
