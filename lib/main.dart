@@ -24,7 +24,7 @@ class AudioService {
     'G': 'G',
     'A': 'A',
     'B': 'B',
-    "C'": 'C2', // assets/notes/C2.wav  (high C)
+    "C'": 'C2', // assets/notes/C2.mp3  (high C)
   };
 
   Future<void> play(String note) async {
@@ -35,6 +35,12 @@ class AudioService {
     final player = _players.putIfAbsent(note, () => AudioPlayer());
     await player.stop();
     await player.play(AssetSource('notes/$filename.mp3'));
+  }
+
+  Future<void> stopAll() async {
+    for (final p in _players.values) {
+      await p.stop();
+    }
   }
 
   Future<void> disposeAll() async {
@@ -273,18 +279,29 @@ class _NoteButtonState extends State<NoteButton> {
 
   @override
   Widget build(BuildContext context) {
+    final pressedColor = HSLColor.fromColor(widget.color)
+        .withLightness(
+          (HSLColor.fromColor(widget.color).lightness - 0.12).clamp(0.0, 1.0),
+        )
+        .toColor();
+
     final button = AnimatedContainer(
-      duration: const Duration(milliseconds: 80),
+      duration: const Duration(milliseconds: 70),
       decoration: BoxDecoration(
-        color: _pressed
-            ? widget.color.withOpacity(0.65)
-            : widget.color,
-        borderRadius: BorderRadius.circular(16),
+        color: _pressed ? pressedColor : widget.color,
+        borderRadius: BorderRadius.circular(14),
+        // Neutral dark shadow only — no colored ghost
         boxShadow: _pressed
-            ? []
+            ? [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.10),
+                  blurRadius: 2,
+                  offset: const Offset(0, 1),
+                ),
+              ]
             : [
                 BoxShadow(
-                  color: widget.color.withOpacity(0.6),
+                  color: Colors.black.withOpacity(0.18),
                   blurRadius: 6,
                   offset: const Offset(0, 3),
                 ),
@@ -294,12 +311,9 @@ class _NoteButtonState extends State<NoteButton> {
         child: Text(
           widget.note,
           style: const TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.w800,
-            color: Colors.white,
-            shadows: [
-              Shadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 1)),
-            ],
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF5D4037), // warm dark brown – readable on all pastels
           ),
         ),
       ),
@@ -385,8 +399,19 @@ class NoteGrid extends StatelessWidget {
 // ---------------------------------------------------------------------------
 // 1. SIMULATOR – tap to play sound
 // ---------------------------------------------------------------------------
-class AngklungSimulator extends StatelessWidget {
+class AngklungSimulator extends StatefulWidget {
   const AngklungSimulator({super.key});
+  @override
+  State<AngklungSimulator> createState() => _AngklungSimulatorState();
+}
+
+class _AngklungSimulatorState extends State<AngklungSimulator> {
+  @override
+  void deactivate() {
+    // Stop all audio the moment the user switches away from this tab
+    AudioService.instance.stopAll();
+    super.deactivate();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -554,7 +579,7 @@ class _RecorderPageState extends State<RecorderPage> {
       await http.post(uri, body: jsonEncode(_sequence));
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Recording sent to Firebase ✓')),
+          const SnackBar(content: Text('Recording sent to Firebase')),
         );
       }
     }
