@@ -25,7 +25,7 @@ jobs:
       - name: Regenerate iOS project
         run: |
           rm -rf ios/ android/
-          flutter create --org com.example --project-name biogas --platforms=android,ios .
+          flutter create --org com.example --project-name angklung --platforms=android,ios .
 
       # ------------------------------------------------------------------
       # 1. Place GoogleService-Info.plist
@@ -286,5 +286,5 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: biogas-trollstore.ipa
-          path: biogas.ipa
+          name: angklung.ipa
+          path: angklung.ipa
