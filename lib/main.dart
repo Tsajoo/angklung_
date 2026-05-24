@@ -332,7 +332,7 @@ Future<String> getAnthropicKey() async {
 /// Maps note label → Firebase key under /angklung/
 /// Matches exact keys visible in the Realtime Database console.
 const Map<String, String> kNoteFirebaseKeys = {
-  'C':  'nota1',  // 🎵 note the 'a' — as shown in your Firebase console
+  'C':  'note1',  // 🎵 note the 'a' — as shown in your Firebase console
   'D':  'note2',
   'E':  'note3',
   'F':  'note4',
