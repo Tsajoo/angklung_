@@ -1,0 +1,1143 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+// ---------------------------------------------------------------------------
+// Audio service – one AudioPlayer per note, reused to prevent memory leaks
+// ---------------------------------------------------------------------------
+class AudioService {
+  AudioService._();
+  static final AudioService instance = AudioService._();
+
+  final Map<String, AudioPlayer> _players = {};
+
+  // Map note label → filename in assets/notes/
+  static const Map<String, String> _noteFiles = {
+    'C': 'C',
+    'D': 'D',
+    'E': 'E',
+    'F': 'F',
+    'G': 'G',
+    'A': 'A',
+    'B': 'B',
+    "C'": 'C2', // assets/notes/C2.mp3  (high C)
+  };
+
+  Future<void> play(String note) async {
+    final filename = _noteFiles[note];
+    if (filename == null) return;
+
+    final player = _players.putIfAbsent(note, () => AudioPlayer());
+    await player.stop();
+    await player.play(AssetSource('notes/$filename.mp3'));
+  }
+
+  Future<void> stopAll() async {
+    for (final p in _players.values) {
+      await p.stop();
+    }
+  }
+
+  Future<void> disposeAll() async {
+    for (final p in _players.values) {
+      await p.dispose();
+    }
+    _players.clear();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// App entry
+// ---------------------------------------------------------------------------
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
+  ]);
+  runApp(const AngklungApp());
+}
+
+class AngklungApp extends StatelessWidget {
+  const AngklungApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Angklung IoT',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFF8BBD0),
+          brightness: Brightness.light,
+        ),
+      ),
+      home: const SetupGate(),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Setup gate – first‑time Firebase URL entry
+// ---------------------------------------------------------------------------
+class SetupGate extends StatefulWidget {
+  const SetupGate({super.key});
+  @override
+  State<SetupGate> createState() => _SetupGateState();
+}
+
+class _SetupGateState extends State<SetupGate> {
+  bool? _configured;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkConfig();
+  }
+
+  Future<void> _checkConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    final url = prefs.getString('firebase_db_url') ?? '';
+    setState(() => _configured = url.isNotEmpty);
+  }
+
+  void _onConfigured() => setState(() => _configured = true);
+
+  @override
+  Widget build(BuildContext context) {
+    if (_configured == null) return const SizedBox.shrink();
+    if (!_configured!) return SetupScreen(onDone: _onConfigured);
+    return const MainPage();
+  }
+}
+
+class SetupScreen extends StatefulWidget {
+  final VoidCallback onDone;
+  const SetupScreen({super.key, required this.onDone});
+
+  @override
+  State<SetupScreen> createState() => _SetupScreenState();
+}
+
+class _SetupScreenState extends State<SetupScreen> {
+  final _controller = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+
+  Future<void> _save() async {
+    if (_formKey.currentState!.validate()) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('firebase_db_url', _controller.text.trim());
+      widget.onDone();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFFCE4EC),
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 48),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Welcome to Angklung IoT',
+                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 20),
+                  TextFormField(
+                    controller: _controller,
+                    decoration: const InputDecoration(
+                      labelText: 'Firebase Realtime Database URL',
+                      hintText: 'https://your-project.firebaseio.com',
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Required' : null,
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    onPressed: _save,
+                    icon: const Icon(Icons.save),
+                    label: const Text('Save & Continue'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main navigation – now 4 tabs (Simulator, Remote, Record, Music)
+// ---------------------------------------------------------------------------
+class MainPage extends StatefulWidget {
+  const MainPage({super.key});
+  @override
+  State<MainPage> createState() => _MainPageState();
+}
+
+class _MainPageState extends State<MainPage> {
+  int _pageIndex = 0;
+
+  // Added MusicPage at index 3
+  static const _pages = [
+    AngklungSimulator(),
+    RemoteController(),
+    RecorderPage(),
+    MusicPage(),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: IndexedStack(
+          index: _pageIndex,
+          children: _pages,
+        ),
+      ),
+      bottomNavigationBar: NavigationBar(
+        height: 56,
+        selectedIndex: _pageIndex,
+        onDestinationSelected: (i) {
+          // Stop sounds when leaving the Simulator tab
+          if (_pageIndex == 0 && i != 0) {
+            AudioService.instance.stopAll();
+          }
+          setState(() => _pageIndex = i);
+        },
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.piano),
+            label: 'Simulator',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings_remote),
+            label: 'Remote',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.fiber_manual_record),
+            label: 'Record',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.music_note),
+            label: 'Music',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+Future<String> getDatabaseUrl() async {
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getString('firebase_db_url') ?? '';
+}
+
+// Shared note data
+const List<String> kNotes = ['C', 'D', 'E', 'F', 'G', 'A', 'B', "C'"];
+const List<Color> kColors = [
+  Color(0xFFF8BBD0), // pink
+  Color(0xFFE1BEE7), // lavender
+  Color(0xFFBBDEFB), // sky blue
+  Color(0xFFC8E6C9), // mint
+  Color(0xFFFFF9C4), // lemon
+  Color(0xFFFFE0B2), // peach
+  Color(0xFFFFCDD2), // salmon
+  Color(0xFFD1C4E9), // lilac
+];
+
+// Map note label to index (C=1, ..., C'=8)
+int noteToIndex(String note) => kNotes.indexOf(note) + 1;
+
+// Predefined song names
+const List<String> kSongNames = [
+  'Pusaka',
+  'Raya',
+  'Halo',
+  'Kartini',
+  'Ketut',
+];
+
+// ---------------------------------------------------------------------------
+// Note button – fills its parent; supports tap or press/release
+// ---------------------------------------------------------------------------
+class NoteButton extends StatefulWidget {
+  final String note;
+  final Color color;
+  final VoidCallback? onTap;
+  final void Function(bool pressed)? onPressedChanged;
+
+  const NoteButton({
+    super.key,
+    required this.note,
+    required this.color,
+    this.onTap,
+    this.onPressedChanged,
+  });
+
+  @override
+  State<NoteButton> createState() => _NoteButtonState();
+}
+
+class _NoteButtonState extends State<NoteButton> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final pressedColor = HSLColor.fromColor(widget.color)
+        .withLightness(
+          (HSLColor.fromColor(widget.color).lightness - 0.12).clamp(0.0, 1.0),
+        )
+        .toColor();
+
+    final button = AnimatedContainer(
+      duration: const Duration(milliseconds: 70),
+      decoration: BoxDecoration(
+        color: _pressed ? pressedColor : widget.color,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: _pressed
+            ? [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.10),
+                  blurRadius: 2,
+                  offset: const Offset(0, 1),
+                ),
+              ]
+            : [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.18),
+                  blurRadius: 6,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+      ),
+      child: Center(
+        child: Text(
+          widget.note,
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF5D4037),
+          ),
+        ),
+      ),
+    );
+
+    if (widget.onPressedChanged != null) {
+      return GestureDetector(
+        onTapDown: (_) {
+          setState(() => _pressed = true);
+          widget.onPressedChanged?.call(true);
+        },
+        onTapUp: (_) {
+          setState(() => _pressed = false);
+          widget.onPressedChanged?.call(false);
+        },
+        onTapCancel: () {
+          setState(() => _pressed = false);
+          widget.onPressedChanged?.call(false);
+        },
+        child: button,
+      );
+    }
+
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapUp: (_) {
+        setState(() => _pressed = false);
+        widget.onTap?.call();
+      },
+      onTapCancel: () => setState(() => _pressed = false),
+      child: button,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Note grid – 2 rows × 4, fills available width with equal spacing
+// ---------------------------------------------------------------------------
+class NoteGrid extends StatelessWidget {
+  final void Function(String note)? onTap;
+  final void Function(String note, bool pressed)? onPressedChanged;
+
+  const NoteGrid({super.key, this.onTap, this.onPressedChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final topRow = kNotes.sublist(0, 4);
+    final bottomRow = kNotes.sublist(4);
+
+    Widget buildRow(List<String> rowNotes, int colorOffset) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: rowNotes.asMap().entries.map((e) {
+          final note = e.value;
+          final color = kColors[e.key + colorOffset];
+          return Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 5),
+              child: NoteButton(
+                note: note,
+                color: color,
+                onTap: onTap != null ? () => onTap!(note) : null,
+                onPressedChanged: onPressedChanged != null
+                    ? (p) => onPressedChanged!(note, p)
+                    : null,
+              ),
+            ),
+          );
+        }).toList(),
+      );
+    }
+
+    return Column(
+      children: [
+        Expanded(child: buildRow(topRow, 0)),
+        const SizedBox(height: 10),
+        Expanded(child: buildRow(bottomRow, 4)),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. SIMULATOR – tap to play sound
+// ---------------------------------------------------------------------------
+class AngklungSimulator extends StatefulWidget {
+  const AngklungSimulator({super.key});
+  @override
+  State<AngklungSimulator> createState() => _AngklungSimulatorState();
+}
+
+class _AngklungSimulatorState extends State<AngklungSimulator> {
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+      child: NoteGrid(
+        onTap: (note) => AudioService.instance.play(note),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. REMOTE – sets angklung/nota1 … nota8 to true for ESP32
+// ---------------------------------------------------------------------------
+class RemoteController extends StatelessWidget {
+  const RemoteController({super.key});
+
+  Future<void> _sendNote(String note) async {
+    final url = await getDatabaseUrl();
+    if (url.isEmpty) return;
+
+    final index = noteToIndex(note); // 1 … 8
+    // Write "true" to angklung/notaX.json
+    final uri = Uri.parse('$url/angklung/nota$index.json');
+    await http.put(uri, body: jsonEncode(true));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 6),
+          child: Text(
+            'Remote Controller (ESP32)',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+        ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            child: NoteGrid(onTap: _sendNote),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3. RECORDER – press & release, auto rests, emits [noteIndex, duration] pairs
+//    (unchanged except for minor cleanup)
+// ---------------------------------------------------------------------------
+class RecorderPage extends StatefulWidget {
+  const RecorderPage({super.key});
+  @override
+  State<RecorderPage> createState() => _RecorderPageState();
+}
+
+class _RecorderPageState extends State<RecorderPage> {
+  bool _recording = false;
+  bool _paused = false;
+  Timer? _timer;
+  Timer? _countdownTimer;
+  int _elapsedMs = 0;
+  int _countdown = 0;
+
+  DateTime? _recordingStartTime;
+  DateTime? _lastEventEndTime;
+
+  List<List<dynamic>> _sequence = [];
+
+  String? _pressedNote;
+  DateTime? _pressTime;
+
+  static const double _minDurationSec = 0.3;
+
+  void _startCountdown() {
+    setState(() => _countdown = 3);
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (_countdown > 1) {
+        setState(() => _countdown--);
+      } else {
+        t.cancel();
+        _beginRecording();
+      }
+    });
+  }
+
+  void _beginRecording() {
+    final now = DateTime.now();
+    setState(() {
+      _recording = true;
+      _paused = false;
+      _elapsedMs = 0;
+      _countdown = 0;
+      _sequence = [];
+      _pressedNote = null;
+      _recordingStartTime = now;
+      _lastEventEndTime = now;
+    });
+    _startElapsedTimer();
+  }
+
+  void _startElapsedTimer() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (!_paused && _recordingStartTime != null) {
+        setState(() {
+          _elapsedMs =
+              DateTime.now().difference(_recordingStartTime!).inMilliseconds;
+        });
+      }
+    });
+  }
+
+  void _pauseResume() {
+    if (_paused) {
+      _recordingStartTime =
+          DateTime.now().subtract(Duration(milliseconds: _elapsedMs));
+      _startElapsedTimer();
+      setState(() => _paused = false);
+    } else {
+      _timer?.cancel();
+      setState(() => _paused = true);
+    }
+  }
+
+  void _reset() {
+    _timer?.cancel();
+    _countdownTimer?.cancel();
+    setState(() {
+      _recording = false;
+      _paused = false;
+      _elapsedMs = 0;
+      _countdown = 0;
+      _sequence = [];
+      _pressedNote = null;
+    });
+  }
+
+  Future<void> _stopAndSend() async {
+    if (_pressedNote != null) _finaliseCurrentNote();
+
+    _timer?.cancel();
+    setState(() {
+      _recording = false;
+      _paused = false;
+    });
+
+    if (_sequence.isEmpty) return;
+
+    final url = await getDatabaseUrl();
+    if (url.isNotEmpty) {
+      final uri = Uri.parse('$url/recordings.json');
+      await http.post(uri, body: jsonEncode(_sequence));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Recording sent to Firebase')),
+        );
+      }
+    }
+  }
+
+  void _onNotePressState(String note, bool pressed) {
+    if (!_recording || _paused) {
+      if (pressed) AudioService.instance.play(note);
+      return;
+    }
+
+    if (pressed) {
+      if (_pressedNote != null && _pressedNote != note) {
+        _finaliseCurrentNote();
+      }
+      _pressedNote = note;
+      _pressTime = DateTime.now();
+      AudioService.instance.play(note);
+    } else {
+      if (_pressedNote == note) {
+        _finaliseCurrentNote();
+        _pressedNote = null;
+      }
+    }
+  }
+
+  void _finaliseCurrentNote() {
+    if (_pressedNote == null || _pressTime == null) return;
+
+    final noteIndex = kNotes.indexOf(_pressedNote!) + 1; // 1‑8
+    final pressTime = _pressTime!;
+    final now = DateTime.now();
+
+    double durationSec =
+        now.difference(pressTime).inMilliseconds / 1000.0;
+    if (durationSec < _minDurationSec) durationSec = _minDurationSec;
+
+    final gapSec =
+        pressTime.difference(_lastEventEndTime!).inMilliseconds / 1000.0;
+    if (gapSec > 0.01) {
+      _sequence.add([0, double.parse(gapSec.toStringAsFixed(2))]);
+    }
+
+    _sequence.add([noteIndex, double.parse(durationSec.toStringAsFixed(2))]);
+
+    _lastEventEndTime =
+        pressTime.add(Duration(milliseconds: (durationSec * 1000).round()));
+
+    setState(() {});
+  }
+
+  String _formatMs(int ms) {
+    final sec = ms ~/ 1000;
+    final min = sec ~/ 60;
+    return '${min.toString().padLeft(2, '0')}:${(sec % 60).toString().padLeft(2, '0')}';
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _countdownTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isCountingDown = _countdown > 0;
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 100,
+                child: Text(
+                  isCountingDown
+                      ? '$_countdown'
+                      : _formatMs(_elapsedMs),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: isCountingDown ? 40 : 28,
+                    fontWeight: FontWeight.bold,
+                    color: _recording && !_paused
+                        ? Colors.redAccent
+                        : Colors.black87,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              if (!_recording && !isCountingDown)
+                _CtrlButton(
+                  icon: Icons.fiber_manual_record,
+                  label: 'Record',
+                  color: Colors.redAccent,
+                  onPressed: _startCountdown,
+                )
+              else if (_recording) ...[
+                _CtrlButton(
+                  icon: _paused ? Icons.play_arrow : Icons.pause,
+                  label: _paused ? 'Resume' : 'Pause',
+                  onPressed: _pauseResume,
+                ),
+                const SizedBox(width: 8),
+                _CtrlButton(
+                  icon: Icons.refresh,
+                  label: 'Reset',
+                  onPressed: _reset,
+                ),
+                const SizedBox(width: 8),
+                _CtrlButton(
+                  icon: Icons.stop_circle,
+                  label: 'Stop & Send',
+                  color: Colors.deepOrange,
+                  onPressed: _stopAndSend,
+                ),
+              ],
+              const SizedBox(width: 16),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8BBD0),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${_sequence.length} events',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            child: NoteGrid(
+              onPressedChanged: _onNotePressState,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// Small helper button for recording controls
+class _CtrlButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+  final Color? color;
+
+  const _CtrlButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ElevatedButton.icon(
+      style: ElevatedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        foregroundColor: color,
+      ),
+      onPressed: onPressed,
+      icon: Icon(icon, size: 18),
+      label: Text(label, style: const TextStyle(fontSize: 13)),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. MUSIC PAGE – play predefined songs & create songs from YouTube link
+// ---------------------------------------------------------------------------
+class MusicPage extends StatelessWidget {
+  const MusicPage({super.key});
+
+  // ---- Play a predefined song ----
+  Future<void> _playSong(String songName) async {
+    final url = await getDatabaseUrl();
+    if (url.isEmpty) return;
+
+    // Write true to angklung/playPusaka (or playRaya, etc.)
+    final uri = Uri.parse('$url/angklung/play$songName.json');
+    await http.put(uri, body: jsonEncode(true));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        children: [
+          const TabBar(
+            tabs: [
+              Tab(text: 'Play Song'),
+              Tab(text: 'Create Song'),
+            ],
+          ),
+          Expanded(
+            child: TabBarView(
+              children: [
+                // ---- Tab 1: Play predefined songs ----
+                _PlaySongTab(onPlay: _playSong),
+                // ---- Tab 2: Song Creator ----
+                const SongCreatorPage(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---- Play Song tab content ----
+class _PlaySongTab extends StatelessWidget {
+  final Future<void> Function(String songName) onPlay;
+
+  const _PlaySongTab({required this.onPlay});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(12.0),
+      child: GridView.count(
+        crossAxisCount: 2,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 12,
+        childAspectRatio: 3,
+        children: kSongNames.map((name) {
+          return ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFF8BBD0),
+              foregroundColor: const Color(0xFF5D4037),
+            ),
+            icon: const Icon(Icons.play_arrow),
+            label: Text(
+              'Play $name',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            onPressed: () => onPlay(name),
+          );
+        }).toList(),
+      ),
+    );
+  }
+}
+
+// ---- Song Creator page (YouTube link + recorder) ----
+class SongCreatorPage extends StatefulWidget {
+  const SongCreatorPage({super.key});
+  @override
+  State<SongCreatorPage> createState() => _SongCreatorPageState();
+}
+
+class _SongCreatorPageState extends State<SongCreatorPage> {
+  final _ytController = TextEditingController();
+
+  // Recorder state (similar to RecorderPage)
+  bool _recording = false;
+  bool _paused = false;
+  Timer? _timer;
+  Timer? _countdownTimer;
+  int _elapsedMs = 0;
+  int _countdown = 0;
+
+  DateTime? _recordingStartTime;
+  DateTime? _lastEventEndTime;
+
+  List<List<dynamic>> _sequence = [];
+
+  String? _pressedNote;
+  DateTime? _pressTime;
+
+  static const double _minDurationSec = 0.3;
+
+  @override
+  void dispose() {
+    _ytController.dispose();
+    _timer?.cancel();
+    _countdownTimer?.cancel();
+    super.dispose();
+  }
+
+  // ---- Countdown & recording logic ----
+  void _startCountdown() {
+    setState(() => _countdown = 3);
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (_countdown > 1) {
+        setState(() => _countdown--);
+      } else {
+        t.cancel();
+        _beginRecording();
+      }
+    });
+  }
+
+  void _beginRecording() {
+    final now = DateTime.now();
+    setState(() {
+      _recording = true;
+      _paused = false;
+      _elapsedMs = 0;
+      _countdown = 0;
+      _sequence = [];
+      _pressedNote = null;
+      _recordingStartTime = now;
+      _lastEventEndTime = now;
+    });
+    _startElapsedTimer();
+  }
+
+  void _startElapsedTimer() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (!_paused && _recordingStartTime != null) {
+        setState(() {
+          _elapsedMs =
+              DateTime.now().difference(_recordingStartTime!).inMilliseconds;
+        });
+      }
+    });
+  }
+
+  void _pauseResume() {
+    if (_paused) {
+      _recordingStartTime =
+          DateTime.now().subtract(Duration(milliseconds: _elapsedMs));
+      _startElapsedTimer();
+      setState(() => _paused = false);
+    } else {
+      _timer?.cancel();
+      setState(() => _paused = true);
+    }
+  }
+
+  void _reset() {
+    _timer?.cancel();
+    _countdownTimer?.cancel();
+    setState(() {
+      _recording = false;
+      _paused = false;
+      _elapsedMs = 0;
+      _countdown = 0;
+      _sequence = [];
+      _pressedNote = null;
+    });
+  }
+
+  // ---- Save: upload to songs/<uniqueId> with YouTube URL ----
+  Future<void> _saveSong() async {
+    if (_pressedNote != null) _finaliseCurrentNote();
+
+    _timer?.cancel();
+    setState(() {
+      _recording = false;
+      _paused = false;
+    });
+
+    if (_sequence.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No notes recorded.')),
+      );
+      return;
+    }
+
+    final url = await getDatabaseUrl();
+    if (url.isEmpty) return;
+
+    // Generate a simple unique ID (timestamp + random)
+    final uniqueId =
+        '${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
+
+    // Build the song data
+    final songData = {
+      'youtubeUrl': _ytController.text.trim(),
+      'sequence': _sequence,
+    };
+
+    final uri = Uri.parse('$url/songs/$uniqueId.json');
+    final response = await http.put(uri, body: jsonEncode(songData));
+
+    if (mounted) {
+      if (response.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Song saved as $uniqueId')),
+        );
+        // Clear YouTube field
+        _ytController.clear();
+        _reset();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to save song.')),
+        );
+      }
+    }
+  }
+
+  void _onNotePressState(String note, bool pressed) {
+    if (!_recording || _paused) {
+      if (pressed) AudioService.instance.play(note);
+      return;
+    }
+
+    if (pressed) {
+      if (_pressedNote != null && _pressedNote != note) {
+        _finaliseCurrentNote();
+      }
+      _pressedNote = note;
+      _pressTime = DateTime.now();
+      AudioService.instance.play(note);
+    } else {
+      if (_pressedNote == note) {
+        _finaliseCurrentNote();
+        _pressedNote = null;
+      }
+    }
+  }
+
+  void _finaliseCurrentNote() {
+    if (_pressedNote == null || _pressTime == null) return;
+
+    final noteIndex = kNotes.indexOf(_pressedNote!) + 1; // 1‑8
+    final pressTime = _pressTime!;
+    final now = DateTime.now();
+
+    double durationSec =
+        now.difference(pressTime).inMilliseconds / 1000.0;
+    if (durationSec < _minDurationSec) durationSec = _minDurationSec;
+
+    final gapSec =
+        pressTime.difference(_lastEventEndTime!).inMilliseconds / 1000.0;
+    if (gapSec > 0.01) {
+      _sequence.add([0, double.parse(gapSec.toStringAsFixed(2))]);
+    }
+
+    _sequence.add([noteIndex, double.parse(durationSec.toStringAsFixed(2))]);
+
+    _lastEventEndTime =
+        pressTime.add(Duration(milliseconds: (durationSec * 1000).round()));
+
+    setState(() {});
+  }
+
+  String _formatMs(int ms) {
+    final sec = ms ~/ 1000;
+    final min = sec ~/ 60;
+    return '${min.toString().padLeft(2, '0')}:${(sec % 60).toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isCountingDown = _countdown > 0;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Column(
+        children: [
+          // YouTube URL input
+          TextField(
+            controller: _ytController,
+            decoration: const InputDecoration(
+              labelText: 'YouTube Music URL',
+              hintText: 'https://www.youtube.com/watch?v=...',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.link),
+            ),
+          ),
+          const SizedBox(height: 8),
+          // Recorder controls (same style as RecorderPage)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 100,
+                child: Text(
+                  isCountingDown
+                      ? '$_countdown'
+                      : _formatMs(_elapsedMs),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: isCountingDown ? 40 : 28,
+                    fontWeight: FontWeight.bold,
+                    color: _recording && !_paused
+                        ? Colors.redAccent
+                        : Colors.black87,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              if (!_recording && !isCountingDown)
+                _CtrlButton(
+                  icon: Icons.fiber_manual_record,
+                  label: 'Record',
+                  color: Colors.redAccent,
+                  onPressed: _startCountdown,
+                )
+              else if (_recording) ...[
+                _CtrlButton(
+                  icon: _paused ? Icons.play_arrow : Icons.pause,
+                  label: _paused ? 'Resume' : 'Pause',
+                  onPressed: _pauseResume,
+                ),
+                const SizedBox(width: 8),
+                _CtrlButton(
+                  icon: Icons.refresh,
+                  label: 'Reset',
+                  onPressed: _reset,
+                ),
+                const SizedBox(width: 8),
+                _CtrlButton(
+                  icon: Icons.save,
+                  label: 'Save Song',
+                  color: Colors.deepOrange,
+                  onPressed: _saveSong,
+                ),
+              ],
+              const SizedBox(width: 16),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8BBD0),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${_sequence.length} events',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // Note grid for recording
+          Expanded(
+            child: NoteGrid(
+              onPressedChanged: _onNotePressState,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
