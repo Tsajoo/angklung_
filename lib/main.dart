@@ -1349,7 +1349,7 @@ Example:
     }
   }
 
-  // ── Save sequence to Firebase at songs/<auto-id> ──────────────────────────
+// ── Save sequence to Firebase at songs/<auto-id> ──────────────────────────
   Future<void> _saveToFirebase() async {
     if (_sequence == null) return;
     setState(() {
@@ -1364,12 +1364,17 @@ Example:
         return;
       }
 
+      // Convert the List of Lists into a single formatted string: "{1,1},{2,0.5}..."
+      final String flatSequence = _sequence!.map((e) {
+        return '{${e[0]},${e[1]}}';
+      }).join(',');
+
       final payload = jsonEncode({
         'name': _nameController.text.trim().isNotEmpty
             ? _nameController.text.trim()
             : 'Unknown Song',
         'source': _urlController.text.trim(),
-        'sequence': _sequence,
+        'sequence': flatSequence, // Send the single string here!
         'createdAt': DateTime.now().millisecondsSinceEpoch,
       });
 
@@ -1402,7 +1407,6 @@ Example:
       if (mounted) setState(() => _saving = false);
     }
   }
-
   // ── Preview: human-readable note names ────────────────────────────────────
   String _buildPreview(List<List<dynamic>> seq) {
     const noteNames = ['—', 'C', 'D', 'E', 'F', 'G', 'A', 'B', "C'"];
