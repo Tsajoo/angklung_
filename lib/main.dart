@@ -6,19 +6,62 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-void main() => runApp(const AngklungApp());
+// ---------------------------------------------------------------------------
+// Audio service – one AudioPlayer per note, reused to prevent memory leaks
+// ---------------------------------------------------------------------------
+class AudioService {
+  AudioService._();
+  static final AudioService instance = AudioService._();
+
+  final Map<String, AudioPlayer> _players = {};
+
+  // Map note label → filename in assets/notes/
+  static const Map<String, String> _noteFiles = {
+    'C': 'C',
+    'D': 'D',
+    'E': 'E',
+    'F': 'F',
+    'G': 'G',
+    'A': 'A',
+    'B': 'B',
+    "C'": 'C2', // assets/notes/C2.wav  (high C)
+  };
+
+  Future<void> play(String note) async {
+    final filename = _noteFiles[note];
+    if (filename == null) return;
+
+    // Reuse player per note so overlapping calls on same note just restart
+    final player = _players.putIfAbsent(note, () => AudioPlayer());
+    await player.stop();
+    await player.play(AssetSource('notes/$filename.mp3'));
+  }
+
+  Future<void> disposeAll() async {
+    for (final p in _players.values) {
+      await p.dispose();
+    }
+    _players.clear();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// App entry
+// ---------------------------------------------------------------------------
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
+  ]);
+  runApp(const AngklungApp());
+}
 
 class AngklungApp extends StatelessWidget {
   const AngklungApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // Force landscape
-    SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
-
     return MaterialApp(
       title: 'Angklung IoT',
       debugShowCheckedModeBanner: false,
@@ -44,7 +87,7 @@ class SetupGate extends StatefulWidget {
 }
 
 class _SetupGateState extends State<SetupGate> {
-  bool? configured;
+  bool? _configured;
 
   @override
   void initState() {
@@ -55,15 +98,15 @@ class _SetupGateState extends State<SetupGate> {
   Future<void> _checkConfig() async {
     final prefs = await SharedPreferences.getInstance();
     final url = prefs.getString('firebase_db_url') ?? '';
-    setState(() => configured = url.isNotEmpty);
+    setState(() => _configured = url.isNotEmpty);
   }
 
-  void _onConfigured() => setState(() => configured = true);
+  void _onConfigured() => setState(() => _configured = true);
 
   @override
   Widget build(BuildContext context) {
-    if (configured == null) return const SizedBox.shrink();
-    if (!configured!) return SetupScreen(onDone: _onConfigured);
+    if (_configured == null) return const SizedBox.shrink();
+    if (!_configured!) return SetupScreen(onDone: _onConfigured);
     return const MainPage();
   }
 }
@@ -92,34 +135,38 @@ class _SetupScreenState extends State<SetupScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFFCE4EC),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 40),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('Welcome to Angklung IoT',
-                    style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 20),
-                TextFormField(
-                  controller: _controller,
-                  decoration: const InputDecoration(
-                    labelText: 'Firebase Realtime Database URL',
-                    hintText: 'https://your-project.firebaseio.com',
-                    border: OutlineInputBorder(),
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 48),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Welcome to Angklung IoT',
+                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                   ),
-                  validator: (v) =>
-                      (v == null || v.trim().isEmpty) ? 'Required' : null,
-                ),
-                const SizedBox(height: 20),
-                ElevatedButton.icon(
-                  onPressed: _save,
-                  icon: const Icon(Icons.save),
-                  label: const Text('Save & Continue'),
-                ),
-              ],
+                  const SizedBox(height: 20),
+                  TextFormField(
+                    controller: _controller,
+                    decoration: const InputDecoration(
+                      labelText: 'Firebase Realtime Database URL',
+                      hintText: 'https://your-project.firebaseio.com',
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (v) =>
+                        (v == null || v.trim().isEmpty) ? 'Required' : null,
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    onPressed: _save,
+                    icon: const Icon(Icons.save),
+                    label: const Text('Save & Continue'),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -140,7 +187,7 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> {
   int _pageIndex = 0;
 
-  static const pages = [
+  static const _pages = [
     AngklungSimulator(),
     RemoteController(),
     RecorderPage(),
@@ -149,18 +196,30 @@ class _MainPageState extends State<MainPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
-        index: _pageIndex,
-        children: pages,
+      // No app bar – more vertical room in landscape
+      body: SafeArea(
+        child: IndexedStack(
+          index: _pageIndex,
+          children: _pages,
+        ),
       ),
       bottomNavigationBar: NavigationBar(
+        height: 56, // compact bar for landscape
         selectedIndex: _pageIndex,
         onDestinationSelected: (i) => setState(() => _pageIndex = i),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.music_note), label: 'Simulator'),
-          NavigationDestination(icon: Icon(Icons.settings_remote), label: 'Remote'),
           NavigationDestination(
-              icon: Icon(Icons.fiber_manual_record), label: 'Record'),
+            icon: Icon(Icons.music_note),
+            label: 'Simulator',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings_remote),
+            label: 'Remote',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.fiber_manual_record),
+            label: 'Record',
+          ),
         ],
       ),
     );
@@ -175,75 +234,27 @@ Future<String> getDatabaseUrl() async {
   return prefs.getString('firebase_db_url') ?? '';
 }
 
-// ---------------------------------------------------------------------------
-// 1. SIMULATOR – 8 notes (C‑C'), tap to play sound
-// ---------------------------------------------------------------------------
-class AngklungSimulator extends StatelessWidget {
-  const AngklungSimulator({super.key});
-
-  static const notes = ['C', 'D', 'E', 'F', 'G', 'A', 'B', "C'"];
-  static const colors = [
-    Color(0xFFF8BBD0), // pink
-    Color(0xFFE1BEE7), // lavender
-    Color(0xFFBBDEFB), // light blue
-    Color(0xFFC8E6C9), // mint
-    Color(0xFFFFF9C4), // lemon
-    Color(0xFFFFE0B2), // peach
-    Color(0xFFFFCDD2), // salmon
-    Color(0xFFD1C4E9), // lilac
-  ];
-
-  Future<void> _playNote(BuildContext context, String note) async {
-    final player = AudioPlayer();
-    await player.play(AssetSource('notes/$note.wav'));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final topRow = notes.sublist(0, 4);
-    final bottomRow = notes.sublist(4);
-
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: topRow
-              .asMap()
-              .entries
-              .map((e) => NoteButton(
-                    note: e.value,
-                    color: colors[e.key],
-                    onTap: () => _playNote(context, e.value),
-                  ))
-              .toList(),
-        ),
-        const SizedBox(height: 20),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: bottomRow
-              .asMap()
-              .entries
-              .map((e) => NoteButton(
-                    note: e.value,
-                    color: colors[e.key + 4],
-                    onTap: () => _playNote(context, e.value),
-                  ))
-              .toList(),
-        ),
-      ],
-    );
-  }
-}
+// Shared note data
+const List<String> kNotes = ['C', 'D', 'E', 'F', 'G', 'A', 'B', "C'"];
+const List<Color> kColors = [
+  Color(0xFFF8BBD0), // pink
+  Color(0xFFE1BEE7), // lavender
+  Color(0xFFBBDEFB), // sky blue
+  Color(0xFFC8E6C9), // mint
+  Color(0xFFFFF9C4), // lemon
+  Color(0xFFFFE0B2), // peach
+  Color(0xFFFFCDD2), // salmon
+  Color(0xFFD1C4E9), // lilac
+];
 
 // ---------------------------------------------------------------------------
-// Note button widget (supports simple tap or press/release)
+// Note button – fills its parent; supports tap or press/release
 // ---------------------------------------------------------------------------
-class NoteButton extends StatelessWidget {
+class NoteButton extends StatefulWidget {
   final String note;
   final Color color;
   final VoidCallback? onTap;
-  final Function(bool)? onPressedChanged; // true = pressed, false = released
+  final void Function(bool pressed)? onPressedChanged;
 
   const NoteButton({
     super.key,
@@ -254,46 +265,142 @@ class NoteButton extends StatelessWidget {
   });
 
   @override
+  State<NoteButton> createState() => _NoteButtonState();
+}
+
+class _NoteButtonState extends State<NoteButton> {
+  bool _pressed = false;
+
+  @override
   Widget build(BuildContext context) {
-    Widget button = Material(
-      color: color,
-      borderRadius: BorderRadius.circular(20),
-      elevation: 4,
-      child: SizedBox(
-        width: 80,
-        height: 120,
-        child: Center(
-          child: Text(
-            note,
-            style: const TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
+    final button = AnimatedContainer(
+      duration: const Duration(milliseconds: 80),
+      decoration: BoxDecoration(
+        color: _pressed
+            ? widget.color.withOpacity(0.65)
+            : widget.color,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: _pressed
+            ? []
+            : [
+                BoxShadow(
+                  color: widget.color.withOpacity(0.6),
+                  blurRadius: 6,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+      ),
+      child: Center(
+        child: Text(
+          widget.note,
+          style: const TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: Colors.white,
+            shadows: [
+              Shadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 1)),
+            ],
           ),
         ),
       ),
     );
 
-    if (onPressedChanged != null) {
+    if (widget.onPressedChanged != null) {
       return GestureDetector(
-        onTapDown: (_) => onPressedChanged?.call(true),
-        onTapUp: (_) => onPressedChanged?.call(false),
-        onTapCancel: () => onPressedChanged?.call(false),
+        onTapDown: (_) {
+          setState(() => _pressed = true);
+          widget.onPressedChanged?.call(true);
+        },
+        onTapUp: (_) {
+          setState(() => _pressed = false);
+          widget.onPressedChanged?.call(false);
+        },
+        onTapCancel: () {
+          setState(() => _pressed = false);
+          widget.onPressedChanged?.call(false);
+        },
         child: button,
       );
     }
 
-    return InkWell(
-      borderRadius: BorderRadius.circular(20),
-      onTap: onTap,
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapUp: (_) {
+        setState(() => _pressed = false);
+        widget.onTap?.call();
+      },
+      onTapCancel: () => setState(() => _pressed = false),
       child: button,
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// 2. REMOTE – tap sends note to Firebase (for ESP32)
+// Note grid – 2 rows × 4, fills available width with equal spacing
+// ---------------------------------------------------------------------------
+class NoteGrid extends StatelessWidget {
+  final void Function(String note)? onTap;
+  final void Function(String note, bool pressed)? onPressedChanged;
+
+  const NoteGrid({super.key, this.onTap, this.onPressedChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final topRow = kNotes.sublist(0, 4);
+    final bottomRow = kNotes.sublist(4);
+
+    Widget buildRow(List<String> rowNotes, int colorOffset) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: rowNotes.asMap().entries.map((e) {
+          final note = e.value;
+          final color = kColors[e.key + colorOffset];
+          return Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 5),
+              child: NoteButton(
+                note: note,
+                color: color,
+                onTap: onTap != null ? () => onTap!(note) : null,
+                onPressedChanged: onPressedChanged != null
+                    ? (p) => onPressedChanged!(note, p)
+                    : null,
+              ),
+            ),
+          );
+        }).toList(),
+      );
+    }
+
+    return Column(
+      children: [
+        Expanded(child: buildRow(topRow, 0)),
+        const SizedBox(height: 10),
+        Expanded(child: buildRow(bottomRow, 4)),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. SIMULATOR – tap to play sound
+// ---------------------------------------------------------------------------
+class AngklungSimulator extends StatelessWidget {
+  const AngklungSimulator({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+      child: NoteGrid(
+        onTap: (note) => AudioService.instance.play(note),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. REMOTE – sends note to Firebase for ESP32
 // ---------------------------------------------------------------------------
 class RemoteController extends StatelessWidget {
   const RemoteController({super.key});
@@ -302,56 +409,39 @@ class RemoteController extends StatelessWidget {
     final url = await getDatabaseUrl();
     if (url.isEmpty) return;
     final uri = Uri.parse('$url/play/note.json');
-    await http.put(uri,
-        body: jsonEncode(
-            {'note': note, 'timestamp': DateTime.now().millisecondsSinceEpoch}));
+    await http.put(
+      uri,
+      body: jsonEncode({
+        'note': note,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      }),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final notes = AngklungSimulator.notes;
-    final colors = AngklungSimulator.colors;
-
     return Column(
       children: [
-        const SizedBox(height: 10),
-        const Text('Remote (ESP32)', style: TextStyle(fontSize: 18)),
-        const Spacer(),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: notes
-              .sublist(0, 4)
-              .asMap()
-              .entries
-              .map((e) => NoteButton(
-                    note: e.value,
-                    color: colors[e.key],
-                    onTap: () => _sendNote(e.value),
-                  ))
-              .toList(),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 6),
+          child: Text(
+            'Remote Controller (ESP32)',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
         ),
-        const SizedBox(height: 20),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: notes
-              .sublist(4)
-              .asMap()
-              .entries
-              .map((e) => NoteButton(
-                    note: e.value,
-                    color: colors[e.key + 4],
-                    onTap: () => _sendNote(e.value),
-                  ))
-              .toList(),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            child: NoteGrid(onTap: _sendNote),
+          ),
         ),
-        const Spacer(),
       ],
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// 3. RECORDER – press & release, min duration 0.3s, auto‑rests, format [note,dur]
+// 3. RECORDER – press & release, auto rests, emits [noteIndex, duration] pairs
 // ---------------------------------------------------------------------------
 class RecorderPage extends StatefulWidget {
   const RecorderPage({super.key});
@@ -363,32 +453,26 @@ class _RecorderPageState extends State<RecorderPage> {
   bool _recording = false;
   bool _paused = false;
   Timer? _timer;
-  int _elapsedMs = 0;               // total recording time (ms)
-  int _countdown = 0;               // 3‑2‑1 before start
-  DateTime? _recordingStartTime;    // when recording really started
+  Timer? _countdownTimer;
+  int _elapsedMs = 0;
+  int _countdown = 0;
 
-  // Sequence of [noteIndex, duration] pairs (index 0 = rest, 1‑8 = notes)
+  DateTime? _recordingStartTime;
+  DateTime? _lastEventEndTime;
+
   List<List<dynamic>> _sequence = [];
 
-  // Currently held note info
-  String? _pressedNote;             // note name
-  DateTime? _pressTime;             // when the current note was pressed
+  String? _pressedNote;
+  DateTime? _pressTime;
 
-  // Last end time (used to calculate rests)
-  DateTime? _lastEventEndTime;      // end of last note/rest
+  static const double _minDurationSec = 0.3;
 
-  final notes = AngklungSimulator.notes;
-  final colors = AngklungSimulator.colors;
-
-  static const double minDurationSec = 0.3;
-
+  // ── countdown → record ──────────────────────────────────────────────────
   void _startCountdown() {
-    _countdown = 3;
-    setState(() {});
-    Timer.periodic(const Duration(seconds: 1), (t) {
+    setState(() => _countdown = 3);
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (_countdown > 1) {
-        _countdown--;
-        setState(() {});
+        setState(() => _countdown--);
       } else {
         t.cancel();
         _beginRecording();
@@ -397,95 +481,103 @@ class _RecorderPageState extends State<RecorderPage> {
   }
 
   void _beginRecording() {
-    _recording = true;
-    _paused = false;
-    _elapsedMs = 0;
-    _sequence = [];
-    _pressedNote = null;
-    _recordingStartTime = DateTime.now();
-    _lastEventEndTime = _recordingStartTime;  // start of silence
+    final now = DateTime.now();
+    setState(() {
+      _recording = true;
+      _paused = false;
+      _elapsedMs = 0;
+      _countdown = 0;
+      _sequence = [];
+      _pressedNote = null;
+      _recordingStartTime = now;
+      _lastEventEndTime = now;
+    });
+    _startElapsedTimer();
+  }
 
-    _timer = Timer.periodic(const Duration(milliseconds: 100), (t) {
-      if (!_paused) {
-        _elapsedMs = DateTime.now().difference(_recordingStartTime!).inMilliseconds;
-        setState(() {});
+  void _startElapsedTimer() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (!_paused && _recordingStartTime != null) {
+        setState(() {
+          _elapsedMs =
+              DateTime.now().difference(_recordingStartTime!).inMilliseconds;
+        });
       }
     });
-    setState(() {});
   }
 
+  // ── pause / resume ───────────────────────────────────────────────────────
   void _pauseResume() {
     if (_paused) {
-      // Resume
-      final now = DateTime.now();
-      // Adjust start so elapsed stays continuous
-      _recordingStartTime = now.subtract(Duration(milliseconds: _elapsedMs));
-      // We don't change _lastEventEndTime – gaps are computed relative to absolute times
-      _timer = Timer.periodic(const Duration(milliseconds: 100), (t) {
-        _elapsedMs = DateTime.now().difference(_recordingStartTime!).inMilliseconds;
-        setState(() {});
-      });
-      _paused = false;
+      // Resume: shift start time so elapsed stays continuous
+      _recordingStartTime =
+          DateTime.now().subtract(Duration(milliseconds: _elapsedMs));
+      _startElapsedTimer();
+      setState(() => _paused = false);
     } else {
-      // Pause
-      _paused = true;
       _timer?.cancel();
+      setState(() => _paused = true);
     }
-    setState(() {});
   }
 
+  // ── reset ────────────────────────────────────────────────────────────────
   void _reset() {
     _timer?.cancel();
-    _recording = false;
-    _paused = false;
-    _elapsedMs = 0;
-    _countdown = 0;
-    _sequence = [];
-    _pressedNote = null;
-    setState(() {});
+    _countdownTimer?.cancel();
+    setState(() {
+      _recording = false;
+      _paused = false;
+      _elapsedMs = 0;
+      _countdown = 0;
+      _sequence = [];
+      _pressedNote = null;
+    });
   }
 
-  void _stopAndSend() async {
-    // If a note is still pressed, finalise it
-    if (_pressedNote != null) {
-      _finaliseCurrentNote();
-    }
+  // ── stop & send ──────────────────────────────────────────────────────────
+  Future<void> _stopAndSend() async {
+    // Finalise any still-held note
+    if (_pressedNote != null) _finaliseCurrentNote();
 
     _timer?.cancel();
-    _recording = false;
-    setState(() {});
+    setState(() {
+      _recording = false;
+      _paused = false;
+    });
+
+    if (_sequence.isEmpty) return;
 
     final url = await getDatabaseUrl();
-    if (url.isNotEmpty && _sequence.isNotEmpty) {
+    if (url.isNotEmpty) {
       final uri = Uri.parse('$url/recordings.json');
       await http.post(uri, body: jsonEncode(_sequence));
-      if (context.mounted) {
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Recording sent to Firebase')),
+          const SnackBar(content: Text('Recording sent to Firebase ✓')),
         );
       }
     }
   }
 
-  // Called when a note button is pressed or released
+  // ── note press/release handler ───────────────────────────────────────────
   void _onNotePressState(String note, bool pressed) {
     if (!_recording || _paused) {
-      // In non‑recording mode, just play the sound
-      if (pressed) {
-        AudioPlayer().play(AssetSource('notes/$note.wav'));
-      }
+      // Preview sound even outside recording
+      if (pressed) AudioService.instance.play(note);
       return;
     }
 
     if (pressed) {
-      // If another note is still held, finalise it first
+      // Finalise previously held note if different
       if (_pressedNote != null && _pressedNote != note) {
         _finaliseCurrentNote();
       }
       _pressedNote = note;
       _pressTime = DateTime.now();
+      // Also play the sound so musician hears it
+      AudioService.instance.play(note);
     } else {
-      // Released the same note
       if (_pressedNote == note) {
         _finaliseCurrentNote();
         _pressedNote = null;
@@ -493,122 +585,167 @@ class _RecorderPageState extends State<RecorderPage> {
     }
   }
 
-  // Converts the currently held note into a recorded entry, adding rest before it
+  // ── finalise the currently held note ─────────────────────────────────────
   void _finaliseCurrentNote() {
     if (_pressedNote == null || _pressTime == null) return;
 
-    final noteIndex = notes.indexOf(_pressedNote!) + 1; // 1‑8
+    final noteIndex = kNotes.indexOf(_pressedNote!) + 1; // 1‑8
     final pressTime = _pressTime!;
     final now = DateTime.now();
-    double durationSec = (now.difference(pressTime).inMilliseconds) / 1000.0;
-    if (durationSec < minDurationSec) durationSec = minDurationSec;
 
-    // Calculate gap between last event end and this note's press
-    final gapSec = (pressTime.difference(_lastEventEndTime!).inMilliseconds) / 1000.0;
+    double durationSec =
+        now.difference(pressTime).inMilliseconds / 1000.0;
+    if (durationSec < _minDurationSec) durationSec = _minDurationSec;
+
+    // Gap (rest) before this note
+    final gapSec =
+        pressTime.difference(_lastEventEndTime!).inMilliseconds / 1000.0;
     if (gapSec > 0.01) {
-      // Insert a rest (note 0) of that duration
       _sequence.add([0, double.parse(gapSec.toStringAsFixed(2))]);
     }
 
-    // Add the actual note
+    // The note itself
     _sequence.add([noteIndex, double.parse(durationSec.toStringAsFixed(2))]);
 
-    // Update last event end time to when this note finishes
-    _lastEventEndTime = pressTime.add(Duration(milliseconds: (durationSec * 1000).round()));
+    // Advance timeline
+    _lastEventEndTime =
+        pressTime.add(Duration(milliseconds: (durationSec * 1000).round()));
+
+    setState(() {}); // update event counter
   }
 
+  // ── helpers ───────────────────────────────────────────────────────────────
   String _formatMs(int ms) {
-    final sec = (ms / 1000).floor();
-    final min = (sec / 60).floor();
-    final remainSec = sec % 60;
-    return '${min.toString().padLeft(2, '0')}:${remainSec.toString().padLeft(2, '0')}';
+    final sec = ms ~/ 1000;
+    final min = sec ~/ 60;
+    return '${min.toString().padLeft(2, '0')}:${(sec % 60).toString().padLeft(2, '0')}';
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _countdownTimer?.cancel();
     super.dispose();
   }
 
+  // ── UI ────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
+    final isCountingDown = _countdown > 0;
+
     return Column(
       children: [
-        const SizedBox(height: 10),
-        // Timer display
-        Text(
-          _countdown > 0
-              ? 'Starting in $_countdown...'
-              : _formatMs(_elapsedMs),
-          style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold),
-        ),
-        // Recording controls
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (!_recording)
-              ElevatedButton.icon(
-                onPressed: _startCountdown,
-                icon: const Icon(Icons.fiber_manual_record, color: Colors.red),
-                label: const Text('Record'),
-              )
-            else ...[
-              ElevatedButton.icon(
-                onPressed: _pauseResume,
-                icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
-                label: Text(_paused ? 'Resume' : 'Pause'),
+        // ── Status row ──────────────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // Timer / countdown
+              SizedBox(
+                width: 100,
+                child: Text(
+                  isCountingDown
+                      ? '$_countdown'
+                      : _formatMs(_elapsedMs),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: isCountingDown ? 40 : 28,
+                    fontWeight: FontWeight.bold,
+                    color: _recording && !_paused
+                        ? Colors.redAccent
+                        : Colors.black87,
+                  ),
+                ),
               ),
-              const SizedBox(width: 10),
-              ElevatedButton.icon(
-                onPressed: _reset,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Reset'),
-              ),
-              const SizedBox(width: 10),
-              ElevatedButton.icon(
-                onPressed: _stopAndSend,
-                icon: const Icon(Icons.stop),
-                label: const Text('Stop & Send'),
+              const SizedBox(width: 12),
+              // Controls
+              if (!_recording && !isCountingDown)
+                _CtrlButton(
+                  icon: Icons.fiber_manual_record,
+                  label: 'Record',
+                  color: Colors.redAccent,
+                  onPressed: _startCountdown,
+                )
+              else if (_recording) ...[
+                _CtrlButton(
+                  icon: _paused ? Icons.play_arrow : Icons.pause,
+                  label: _paused ? 'Resume' : 'Pause',
+                  onPressed: _pauseResume,
+                ),
+                const SizedBox(width: 8),
+                _CtrlButton(
+                  icon: Icons.refresh,
+                  label: 'Reset',
+                  onPressed: _reset,
+                ),
+                const SizedBox(width: 8),
+                _CtrlButton(
+                  icon: Icons.stop,
+                  label: 'Stop & Send',
+                  color: Colors.deepOrange,
+                  onPressed: _stopAndSend,
+                ),
+              ],
+              const SizedBox(width: 16),
+              // Event counter badge
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8BBD0),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${_sequence.length} events',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
               ),
             ],
-          ],
+          ),
         ),
-        const Spacer(),
-        // Top row of notes (C D E F)
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: notes
-              .sublist(0, 4)
-              .asMap()
-              .entries
-              .map((e) => NoteButton(
-                    note: e.value,
-                    color: colors[e.key],
-                    onPressedChanged: (pressed) =>
-                        _onNotePressState(e.value, pressed),
-                  ))
-              .toList(),
+
+        // ── Note grid ───────────────────────────────────────────────────────
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            child: NoteGrid(
+              onPressedChanged: _onNotePressState,
+            ),
+          ),
         ),
-        const SizedBox(height: 20),
-        // Bottom row (G A B C')
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: notes
-              .sublist(4)
-              .asMap()
-              .entries
-              .map((e) => NoteButton(
-                    note: e.value,
-                    color: colors[e.key + 4],
-                    onPressedChanged: (pressed) =>
-                        _onNotePressState(e.value, pressed),
-                  ))
-              .toList(),
-        ),
-        const Spacer(),
-        Text('Recorded events: ${_sequence.length}'),
-        const SizedBox(height: 10),
       ],
+    );
+  }
+}
+
+// Small helper button for recording controls
+class _CtrlButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+  final Color? color;
+
+  const _CtrlButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ElevatedButton.icon(
+      style: ElevatedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        foregroundColor: color,
+      ),
+      onPressed: onPressed,
+      icon: Icon(icon, size: 18),
+      label: Text(label, style: const TextStyle(fontSize: 13)),
     );
   }
 }
