@@ -31,7 +31,6 @@ class AudioService {
     final filename = _noteFiles[note];
     if (filename == null) return;
 
-    // Reuse player per note so overlapping calls on same note just restart
     final player = _players.putIfAbsent(note, () => AudioPlayer());
     await player.stop();
     await player.play(AssetSource('notes/$filename.mp3'));
@@ -202,7 +201,6 @@ class _MainPageState extends State<MainPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // No app bar – more vertical room in landscape
       body: SafeArea(
         child: IndexedStack(
           index: _pageIndex,
@@ -210,12 +208,18 @@ class _MainPageState extends State<MainPage> {
         ),
       ),
       bottomNavigationBar: NavigationBar(
-        height: 56, // compact bar for landscape
+        height: 56,
         selectedIndex: _pageIndex,
-        onDestinationSelected: (i) => setState(() => _pageIndex = i),
+        onDestinationSelected: (i) {
+          // ✅ Stop sounds when leaving the Simulator tab
+          if (_pageIndex == 0 && i != 0) {
+            AudioService.instance.stopAll();
+          }
+          setState(() => _pageIndex = i);
+        },
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.music_note),
+            icon: Icon(Icons.piano),               // more reliable icon
             label: 'Simulator',
           ),
           NavigationDestination(
@@ -290,7 +294,6 @@ class _NoteButtonState extends State<NoteButton> {
       decoration: BoxDecoration(
         color: _pressed ? pressedColor : widget.color,
         borderRadius: BorderRadius.circular(14),
-        // Neutral dark shadow only — no colored ghost
         boxShadow: _pressed
             ? [
                 BoxShadow(
@@ -313,7 +316,7 @@ class _NoteButtonState extends State<NoteButton> {
           style: const TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.w700,
-            color: Color(0xFF5D4037), // warm dark brown – readable on all pastels
+            color: Color(0xFF5D4037),
           ),
         ),
       ),
@@ -406,12 +409,8 @@ class AngklungSimulator extends StatefulWidget {
 }
 
 class _AngklungSimulatorState extends State<AngklungSimulator> {
-  @override
-  void deactivate() {
-    // Stop all audio the moment the user switches away from this tab
-    AudioService.instance.stopAll();
-    super.deactivate();
-  }
+  // We removed the deactivate() override – stopping is now handled
+  // by the parent when switching tabs.
 
   @override
   Widget build(BuildContext context) {
@@ -535,7 +534,6 @@ class _RecorderPageState extends State<RecorderPage> {
   // ── pause / resume ───────────────────────────────────────────────────────
   void _pauseResume() {
     if (_paused) {
-      // Resume: shift start time so elapsed stays continuous
       _recordingStartTime =
           DateTime.now().subtract(Duration(milliseconds: _elapsedMs));
       _startElapsedTimer();
@@ -562,7 +560,6 @@ class _RecorderPageState extends State<RecorderPage> {
 
   // ── stop & send ──────────────────────────────────────────────────────────
   Future<void> _stopAndSend() async {
-    // Finalise any still-held note
     if (_pressedNote != null) _finaliseCurrentNote();
 
     _timer?.cancel();
@@ -588,19 +585,16 @@ class _RecorderPageState extends State<RecorderPage> {
   // ── note press/release handler ───────────────────────────────────────────
   void _onNotePressState(String note, bool pressed) {
     if (!_recording || _paused) {
-      // Preview sound even outside recording
       if (pressed) AudioService.instance.play(note);
       return;
     }
 
     if (pressed) {
-      // Finalise previously held note if different
       if (_pressedNote != null && _pressedNote != note) {
         _finaliseCurrentNote();
       }
       _pressedNote = note;
       _pressTime = DateTime.now();
-      // Also play the sound so musician hears it
       AudioService.instance.play(note);
     } else {
       if (_pressedNote == note) {
@@ -622,21 +616,18 @@ class _RecorderPageState extends State<RecorderPage> {
         now.difference(pressTime).inMilliseconds / 1000.0;
     if (durationSec < _minDurationSec) durationSec = _minDurationSec;
 
-    // Gap (rest) before this note
     final gapSec =
         pressTime.difference(_lastEventEndTime!).inMilliseconds / 1000.0;
     if (gapSec > 0.01) {
       _sequence.add([0, double.parse(gapSec.toStringAsFixed(2))]);
     }
 
-    // The note itself
     _sequence.add([noteIndex, double.parse(durationSec.toStringAsFixed(2))]);
 
-    // Advance timeline
     _lastEventEndTime =
         pressTime.add(Duration(milliseconds: (durationSec * 1000).round()));
 
-    setState(() {}); // update event counter
+    setState(() {});
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────
@@ -666,7 +657,6 @@ class _RecorderPageState extends State<RecorderPage> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Timer / countdown
               SizedBox(
                 width: 100,
                 child: Text(
@@ -684,7 +674,6 @@ class _RecorderPageState extends State<RecorderPage> {
                 ),
               ),
               const SizedBox(width: 12),
-              // Controls
               if (!_recording && !isCountingDown)
                 _CtrlButton(
                   icon: Icons.fiber_manual_record,
@@ -706,14 +695,13 @@ class _RecorderPageState extends State<RecorderPage> {
                 ),
                 const SizedBox(width: 8),
                 _CtrlButton(
-                  icon: Icons.stop,
+                  icon: Icons.stop_circle,        // ✅ more reliable icon
                   label: 'Stop & Send',
                   color: Colors.deepOrange,
                   onPressed: _stopAndSend,
                 ),
               ],
               const SizedBox(width: 16),
-              // Event counter badge
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -730,7 +718,6 @@ class _RecorderPageState extends State<RecorderPage> {
             ],
           ),
         ),
-
         // ── Note grid ───────────────────────────────────────────────────────
         Expanded(
           child: Padding(
