@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -181,7 +182,7 @@ class _SetupScreenState extends State<SetupScreen> {
 }
 
 // ---------------------------------------------------------------------------
-// Main navigation (3 pages)
+// Main navigation – now 4 tabs (Simulator, Remote, Record, Music)
 // ---------------------------------------------------------------------------
 class MainPage extends StatefulWidget {
   const MainPage({super.key});
@@ -192,10 +193,12 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> {
   int _pageIndex = 0;
 
+  // Added MusicPage at index 3
   static const _pages = [
     AngklungSimulator(),
     RemoteController(),
     RecorderPage(),
+    MusicPage(),
   ];
 
   @override
@@ -211,7 +214,7 @@ class _MainPageState extends State<MainPage> {
         height: 56,
         selectedIndex: _pageIndex,
         onDestinationSelected: (i) {
-          // ✅ Stop sounds when leaving the Simulator tab
+          // Stop sounds when leaving the Simulator tab
           if (_pageIndex == 0 && i != 0) {
             AudioService.instance.stopAll();
           }
@@ -219,7 +222,7 @@ class _MainPageState extends State<MainPage> {
         },
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.piano),               // more reliable icon
+            icon: Icon(Icons.piano),
             label: 'Simulator',
           ),
           NavigationDestination(
@@ -229,6 +232,10 @@ class _MainPageState extends State<MainPage> {
           NavigationDestination(
             icon: Icon(Icons.fiber_manual_record),
             label: 'Record',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.music_note),
+            label: 'Music',
           ),
         ],
       ),
@@ -255,6 +262,18 @@ const List<Color> kColors = [
   Color(0xFFFFE0B2), // peach
   Color(0xFFFFCDD2), // salmon
   Color(0xFFD1C4E9), // lilac
+];
+
+// Map note label to index (C=1, ..., C'=8)
+int noteToIndex(String note) => kNotes.indexOf(note) + 1;
+
+// Predefined song names
+const List<String> kSongNames = [
+  'Pusaka',
+  'Raya',
+  'Halo',
+  'Kartini',
+  'Ketut',
 ];
 
 // ---------------------------------------------------------------------------
@@ -409,9 +428,6 @@ class AngklungSimulator extends StatefulWidget {
 }
 
 class _AngklungSimulatorState extends State<AngklungSimulator> {
-  // We removed the deactivate() override – stopping is now handled
-  // by the parent when switching tabs.
-
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -424,7 +440,7 @@ class _AngklungSimulatorState extends State<AngklungSimulator> {
 }
 
 // ---------------------------------------------------------------------------
-// 2. REMOTE – sends note to Firebase for ESP32
+// 2. REMOTE – sets angklung/nota1 … nota8 to true for ESP32
 // ---------------------------------------------------------------------------
 class RemoteController extends StatelessWidget {
   const RemoteController({super.key});
@@ -432,14 +448,11 @@ class RemoteController extends StatelessWidget {
   Future<void> _sendNote(String note) async {
     final url = await getDatabaseUrl();
     if (url.isEmpty) return;
-    final uri = Uri.parse('$url/play/note.json');
-    await http.put(
-      uri,
-      body: jsonEncode({
-        'note': note,
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-      }),
-    );
+
+    final index = noteToIndex(note); // 1 … 8
+    // Write "true" to angklung/notaX.json
+    final uri = Uri.parse('$url/angklung/nota$index.json');
+    await http.put(uri, body: jsonEncode(true));
   }
 
   @override
@@ -466,6 +479,7 @@ class RemoteController extends StatelessWidget {
 
 // ---------------------------------------------------------------------------
 // 3. RECORDER – press & release, auto rests, emits [noteIndex, duration] pairs
+//    (unchanged except for minor cleanup)
 // ---------------------------------------------------------------------------
 class RecorderPage extends StatefulWidget {
   const RecorderPage({super.key});
@@ -491,7 +505,6 @@ class _RecorderPageState extends State<RecorderPage> {
 
   static const double _minDurationSec = 0.3;
 
-  // ── countdown → record ──────────────────────────────────────────────────
   void _startCountdown() {
     setState(() => _countdown = 3);
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
@@ -531,7 +544,6 @@ class _RecorderPageState extends State<RecorderPage> {
     });
   }
 
-  // ── pause / resume ───────────────────────────────────────────────────────
   void _pauseResume() {
     if (_paused) {
       _recordingStartTime =
@@ -544,7 +556,6 @@ class _RecorderPageState extends State<RecorderPage> {
     }
   }
 
-  // ── reset ────────────────────────────────────────────────────────────────
   void _reset() {
     _timer?.cancel();
     _countdownTimer?.cancel();
@@ -558,7 +569,6 @@ class _RecorderPageState extends State<RecorderPage> {
     });
   }
 
-  // ── stop & send ──────────────────────────────────────────────────────────
   Future<void> _stopAndSend() async {
     if (_pressedNote != null) _finaliseCurrentNote();
 
@@ -582,7 +592,6 @@ class _RecorderPageState extends State<RecorderPage> {
     }
   }
 
-  // ── note press/release handler ───────────────────────────────────────────
   void _onNotePressState(String note, bool pressed) {
     if (!_recording || _paused) {
       if (pressed) AudioService.instance.play(note);
@@ -604,7 +613,6 @@ class _RecorderPageState extends State<RecorderPage> {
     }
   }
 
-  // ── finalise the currently held note ─────────────────────────────────────
   void _finaliseCurrentNote() {
     if (_pressedNote == null || _pressTime == null) return;
 
@@ -630,7 +638,6 @@ class _RecorderPageState extends State<RecorderPage> {
     setState(() {});
   }
 
-  // ── helpers ───────────────────────────────────────────────────────────────
   String _formatMs(int ms) {
     final sec = ms ~/ 1000;
     final min = sec ~/ 60;
@@ -644,14 +651,12 @@ class _RecorderPageState extends State<RecorderPage> {
     super.dispose();
   }
 
-  // ── UI ────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final isCountingDown = _countdown > 0;
 
     return Column(
       children: [
-        // ── Status row ──────────────────────────────────────────────────────
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Row(
@@ -695,7 +700,7 @@ class _RecorderPageState extends State<RecorderPage> {
                 ),
                 const SizedBox(width: 8),
                 _CtrlButton(
-                  icon: Icons.stop_circle,        // ✅ more reliable icon
+                  icon: Icons.stop_circle,
                   label: 'Stop & Send',
                   color: Colors.deepOrange,
                   onPressed: _stopAndSend,
@@ -718,7 +723,6 @@ class _RecorderPageState extends State<RecorderPage> {
             ],
           ),
         ),
-        // ── Note grid ───────────────────────────────────────────────────────
         Expanded(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
@@ -758,6 +762,382 @@ class _CtrlButton extends StatelessWidget {
       onPressed: onPressed,
       icon: Icon(icon, size: 18),
       label: Text(label, style: const TextStyle(fontSize: 13)),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. MUSIC PAGE – play predefined songs & create songs from YouTube link
+// ---------------------------------------------------------------------------
+class MusicPage extends StatelessWidget {
+  const MusicPage({super.key});
+
+  // ---- Play a predefined song ----
+  Future<void> _playSong(String songName) async {
+    final url = await getDatabaseUrl();
+    if (url.isEmpty) return;
+
+    // Write true to angklung/playPusaka (or playRaya, etc.)
+    final uri = Uri.parse('$url/angklung/play$songName.json');
+    await http.put(uri, body: jsonEncode(true));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        children: [
+          const TabBar(
+            tabs: [
+              Tab(text: 'Play Song'),
+              Tab(text: 'Create Song'),
+            ],
+          ),
+          Expanded(
+            child: TabBarView(
+              children: [
+                // ---- Tab 1: Play predefined songs ----
+                _PlaySongTab(onPlay: _playSong),
+                // ---- Tab 2: Song Creator ----
+                const SongCreatorPage(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---- Play Song tab content ----
+class _PlaySongTab extends StatelessWidget {
+  final Future<void> Function(String songName) onPlay;
+
+  const _PlaySongTab({required this.onPlay});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(12.0),
+      child: GridView.count(
+        crossAxisCount: 2,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 12,
+        childAspectRatio: 3,
+        children: kSongNames.map((name) {
+          return ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFF8BBD0),
+              foregroundColor: const Color(0xFF5D4037),
+            ),
+            icon: const Icon(Icons.play_arrow),
+            label: Text(
+              'Play $name',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            onPressed: () => onPlay(name),
+          );
+        }).toList(),
+      ),
+    );
+  }
+}
+
+// ---- Song Creator page (YouTube link + recorder) ----
+class SongCreatorPage extends StatefulWidget {
+  const SongCreatorPage({super.key});
+  @override
+  State<SongCreatorPage> createState() => _SongCreatorPageState();
+}
+
+class _SongCreatorPageState extends State<SongCreatorPage> {
+  final _ytController = TextEditingController();
+
+  // Recorder state (similar to RecorderPage)
+  bool _recording = false;
+  bool _paused = false;
+  Timer? _timer;
+  Timer? _countdownTimer;
+  int _elapsedMs = 0;
+  int _countdown = 0;
+
+  DateTime? _recordingStartTime;
+  DateTime? _lastEventEndTime;
+
+  List<List<dynamic>> _sequence = [];
+
+  String? _pressedNote;
+  DateTime? _pressTime;
+
+  static const double _minDurationSec = 0.3;
+
+  @override
+  void dispose() {
+    _ytController.dispose();
+    _timer?.cancel();
+    _countdownTimer?.cancel();
+    super.dispose();
+  }
+
+  // ---- Countdown & recording logic ----
+  void _startCountdown() {
+    setState(() => _countdown = 3);
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (_countdown > 1) {
+        setState(() => _countdown--);
+      } else {
+        t.cancel();
+        _beginRecording();
+      }
+    });
+  }
+
+  void _beginRecording() {
+    final now = DateTime.now();
+    setState(() {
+      _recording = true;
+      _paused = false;
+      _elapsedMs = 0;
+      _countdown = 0;
+      _sequence = [];
+      _pressedNote = null;
+      _recordingStartTime = now;
+      _lastEventEndTime = now;
+    });
+    _startElapsedTimer();
+  }
+
+  void _startElapsedTimer() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (!_paused && _recordingStartTime != null) {
+        setState(() {
+          _elapsedMs =
+              DateTime.now().difference(_recordingStartTime!).inMilliseconds;
+        });
+      }
+    });
+  }
+
+  void _pauseResume() {
+    if (_paused) {
+      _recordingStartTime =
+          DateTime.now().subtract(Duration(milliseconds: _elapsedMs));
+      _startElapsedTimer();
+      setState(() => _paused = false);
+    } else {
+      _timer?.cancel();
+      setState(() => _paused = true);
+    }
+  }
+
+  void _reset() {
+    _timer?.cancel();
+    _countdownTimer?.cancel();
+    setState(() {
+      _recording = false;
+      _paused = false;
+      _elapsedMs = 0;
+      _countdown = 0;
+      _sequence = [];
+      _pressedNote = null;
+    });
+  }
+
+  // ---- Save: upload to songs/<uniqueId> with YouTube URL ----
+  Future<void> _saveSong() async {
+    if (_pressedNote != null) _finaliseCurrentNote();
+
+    _timer?.cancel();
+    setState(() {
+      _recording = false;
+      _paused = false;
+    });
+
+    if (_sequence.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No notes recorded.')),
+      );
+      return;
+    }
+
+    final url = await getDatabaseUrl();
+    if (url.isEmpty) return;
+
+    // Generate a simple unique ID (timestamp + random)
+    final uniqueId =
+        '${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
+
+    // Build the song data
+    final songData = {
+      'youtubeUrl': _ytController.text.trim(),
+      'sequence': _sequence,
+    };
+
+    final uri = Uri.parse('$url/songs/$uniqueId.json');
+    final response = await http.put(uri, body: jsonEncode(songData));
+
+    if (mounted) {
+      if (response.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Song saved as $uniqueId')),
+        );
+        // Clear YouTube field
+        _ytController.clear();
+        _reset();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to save song.')),
+        );
+      }
+    }
+  }
+
+  void _onNotePressState(String note, bool pressed) {
+    if (!_recording || _paused) {
+      if (pressed) AudioService.instance.play(note);
+      return;
+    }
+
+    if (pressed) {
+      if (_pressedNote != null && _pressedNote != note) {
+        _finaliseCurrentNote();
+      }
+      _pressedNote = note;
+      _pressTime = DateTime.now();
+      AudioService.instance.play(note);
+    } else {
+      if (_pressedNote == note) {
+        _finaliseCurrentNote();
+        _pressedNote = null;
+      }
+    }
+  }
+
+  void _finaliseCurrentNote() {
+    if (_pressedNote == null || _pressTime == null) return;
+
+    final noteIndex = kNotes.indexOf(_pressedNote!) + 1; // 1‑8
+    final pressTime = _pressTime!;
+    final now = DateTime.now();
+
+    double durationSec =
+        now.difference(pressTime).inMilliseconds / 1000.0;
+    if (durationSec < _minDurationSec) durationSec = _minDurationSec;
+
+    final gapSec =
+        pressTime.difference(_lastEventEndTime!).inMilliseconds / 1000.0;
+    if (gapSec > 0.01) {
+      _sequence.add([0, double.parse(gapSec.toStringAsFixed(2))]);
+    }
+
+    _sequence.add([noteIndex, double.parse(durationSec.toStringAsFixed(2))]);
+
+    _lastEventEndTime =
+        pressTime.add(Duration(milliseconds: (durationSec * 1000).round()));
+
+    setState(() {});
+  }
+
+  String _formatMs(int ms) {
+    final sec = ms ~/ 1000;
+    final min = sec ~/ 60;
+    return '${min.toString().padLeft(2, '0')}:${(sec % 60).toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isCountingDown = _countdown > 0;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Column(
+        children: [
+          // YouTube URL input
+          TextField(
+            controller: _ytController,
+            decoration: const InputDecoration(
+              labelText: 'YouTube Music URL',
+              hintText: 'https://www.youtube.com/watch?v=...',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.link),
+            ),
+          ),
+          const SizedBox(height: 8),
+          // Recorder controls (same style as RecorderPage)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 100,
+                child: Text(
+                  isCountingDown
+                      ? '$_countdown'
+                      : _formatMs(_elapsedMs),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: isCountingDown ? 40 : 28,
+                    fontWeight: FontWeight.bold,
+                    color: _recording && !_paused
+                        ? Colors.redAccent
+                        : Colors.black87,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              if (!_recording && !isCountingDown)
+                _CtrlButton(
+                  icon: Icons.fiber_manual_record,
+                  label: 'Record',
+                  color: Colors.redAccent,
+                  onPressed: _startCountdown,
+                )
+              else if (_recording) ...[
+                _CtrlButton(
+                  icon: _paused ? Icons.play_arrow : Icons.pause,
+                  label: _paused ? 'Resume' : 'Pause',
+                  onPressed: _pauseResume,
+                ),
+                const SizedBox(width: 8),
+                _CtrlButton(
+                  icon: Icons.refresh,
+                  label: 'Reset',
+                  onPressed: _reset,
+                ),
+                const SizedBox(width: 8),
+                _CtrlButton(
+                  icon: Icons.save,
+                  label: 'Save Song',
+                  color: Colors.deepOrange,
+                  onPressed: _saveSong,
+                ),
+              ],
+              const SizedBox(width: 16),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8BBD0),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${_sequence.length} events',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // Note grid for recording
+          Expanded(
+            child: NoteGrid(
+              onPressedChanged: _onNotePressState,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
