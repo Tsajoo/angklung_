@@ -57,12 +57,20 @@ class AudioService {
   }
 
   /// Stop a specific note (after releasing in Simulator)
-  Future<void> stopNote(String note) async {
-    final player = _players[note];
-    if (player == null) return;
-    // No need to change release mode; stop() will halt the loop.
+Future<void> stopNote(String note) async {
+  final player = _players[note];
+  if (player == null) return;
+
+  if (player.state == PlayerState.playing) {
+    // Switch from LOOP mode to RELEASE mode.
+    // The player will finish playing the current sample and then stop automatically.
+    await player.setReleaseMode(ReleaseMode.release);
+  } else {
+    // Already stopped or idle – ensure release mode is set.
+    await player.setReleaseMode(ReleaseMode.release);
     await player.stop();
   }
+}
 
   Future<void> stopAll() async {
     for (final entry in _players.entries) {
