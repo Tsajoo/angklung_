@@ -31,8 +31,11 @@ class AudioService {
     final filename = _noteFiles[note];
     if (filename == null) return;
     final player = _players.putIfAbsent(note, () => AudioPlayer());
+    
+    // Low‑latency for snappier response
+    await player.setPlayerMode(PlayerMode.lowLatency);
+    await player.stop();                 // ensure previous one-shot stops
     await player.setReleaseMode(ReleaseMode.release);
-    await player.stop();
     await player.play(AssetSource('notes/$filename.mp3'));
   }
 
@@ -41,7 +44,14 @@ class AudioService {
     final filename = _noteFiles[note];
     if (filename == null) return;
     final player = _players.putIfAbsent(note, () => AudioPlayer());
-    await player.stop();
+
+    // Only stop if it’s currently playing something (prevents double-starts)
+    if (player.state == PlayerState.playing) {
+      await player.stop();
+    }
+
+    // Low‑latency + loop mode → seamless infinite sustain
+    await player.setPlayerMode(PlayerMode.lowLatency);
     await player.setReleaseMode(ReleaseMode.loop);
     await player.play(AssetSource('notes/$filename.mp3'));
   }
@@ -50,13 +60,12 @@ class AudioService {
   Future<void> stopNote(String note) async {
     final player = _players[note];
     if (player == null) return;
-    await player.setReleaseMode(ReleaseMode.release);
+    // No need to change release mode; stop() will halt the loop.
     await player.stop();
   }
 
   Future<void> stopAll() async {
     for (final entry in _players.entries) {
-      await entry.value.setReleaseMode(ReleaseMode.release);
       await entry.value.stop();
     }
   }
@@ -68,7 +77,6 @@ class AudioService {
     _players.clear();
   }
 }
-
 // ---------------------------------------------------------------------------
 // App entry
 // ---------------------------------------------------------------------------
