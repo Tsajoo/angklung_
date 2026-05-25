@@ -26,17 +26,38 @@ class AudioService {
     "C'": 'C2',
   };
 
+  /// Single-shot play (used by Remote, Recorder, Music pages)
   Future<void> play(String note) async {
     final filename = _noteFiles[note];
     if (filename == null) return;
     final player = _players.putIfAbsent(note, () => AudioPlayer());
+    await player.setReleaseMode(ReleaseMode.release);
     await player.stop();
     await player.play(AssetSource('notes/$filename.mp3'));
   }
 
+  /// Loop note continuously until [stopNote] is called (Simulator hold)
+  Future<void> startLooping(String note) async {
+    final filename = _noteFiles[note];
+    if (filename == null) return;
+    final player = _players.putIfAbsent(note, () => AudioPlayer());
+    await player.stop();
+    await player.setReleaseMode(ReleaseMode.loop);
+    await player.play(AssetSource('notes/$filename.mp3'));
+  }
+
+  /// Stop a specific note (after releasing in Simulator)
+  Future<void> stopNote(String note) async {
+    final player = _players[note];
+    if (player == null) return;
+    await player.setReleaseMode(ReleaseMode.release);
+    await player.stop();
+  }
+
   Future<void> stopAll() async {
-    for (final p in _players.values) {
-      await p.stop();
+    for (final entry in _players.entries) {
+      await entry.value.setReleaseMode(ReleaseMode.release);
+      await entry.value.stop();
     }
   }
 
@@ -71,9 +92,10 @@ class AngklungApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFF8BBD0),
+          seedColor: const Color(0xFFF48FB1),
           brightness: Brightness.light,
         ),
+        fontFamily: 'Roboto',
       ),
       home: const SetupGate(),
     );
@@ -81,7 +103,7 @@ class AngklungApp extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Setup gate – checks Firebase URL is set
+// Setup gate
 // ---------------------------------------------------------------------------
 class SetupGate extends StatefulWidget {
   const SetupGate({super.key});
@@ -115,7 +137,7 @@ class _SetupGateState extends State<SetupGate> {
 }
 
 // ---------------------------------------------------------------------------
-// Setup / Settings screen – Firebase URL + Gemini API key
+// Setup / Settings screen
 // ---------------------------------------------------------------------------
 class SetupScreen extends StatefulWidget {
   final VoidCallback onDone;
@@ -254,66 +276,200 @@ class _MainPageState extends State<MainPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: 34,
-        title: const Text('Angklung IoT', style: TextStyle(fontSize: 13)),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings_outlined, size: 18),
-            tooltip: 'Settings',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) =>
-                    SetupScreen(onDone: () => Navigator.pop(context)),
+      // Soft gradient background across entire app
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFFFFF0F5), Color(0xFFF3E5F5)],
+          ),
+        ),
+        child: Column(
+          children: [
+            // Custom app bar with gradient
+            _AppBar(
+              onSettings: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) =>
+                      SetupScreen(onDone: () => Navigator.pop(context)),
+                ),
+              ),
+            ),
+            // Pages
+            Expanded(
+              child: SafeArea(
+                top: false,
+                child: IndexedStack(index: _pageIndex, children: _pages),
+              ),
+            ),
+            // Bottom nav
+            _BottomNav(
+              selectedIndex: _pageIndex,
+              onTap: (i) {
+                if (_pageIndex == 0 && i != 0) {
+                  AudioService.instance.stopAll();
+                }
+                setState(() => _pageIndex = i);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Custom AppBar
+// ---------------------------------------------------------------------------
+class _AppBar extends StatelessWidget {
+  final VoidCallback onSettings;
+  const _AppBar({required this.onSettings});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 42,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFFF8BBD0), Color(0xFFE1BEE7)],
+        ),
+        boxShadow: [
+          BoxShadow(color: Color(0x18000000), blurRadius: 4, offset: Offset(0, 2)),
+        ],
+      ),
+      child: Row(
+        children: [
+          const Text('🎵', style: TextStyle(fontSize: 16)),
+          const SizedBox(width: 6),
+          const Text(
+            'Angklung IoT',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF880E4F),
+              letterSpacing: 0.3,
+            ),
+          ),
+          const Spacer(),
+          GestureDetector(
+            onTap: onSettings,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.55),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.settings_outlined, size: 14, color: Color(0xFF880E4F)),
+                  SizedBox(width: 4),
+                  Text(
+                    'Settings',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF880E4F)),
+                  ),
+                ],
               ),
             ),
           ),
         ],
       ),
-      body: SafeArea(
-        child: IndexedStack(index: _pageIndex, children: _pages),
-      ),
-      bottomNavigationBar: NavigationBar(
-        height: 54,
-        selectedIndex: _pageIndex,
-        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-        onDestinationSelected: (i) {
-          if (_pageIndex == 0 && i != 0) {
-            AudioService.instance.stopAll();
-          }
-          setState(() => _pageIndex = i);
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.piano_outlined),
-            selectedIcon: Icon(Icons.piano),
-            label: 'Simulator',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_remote_outlined),
-            selectedIcon: Icon(Icons.settings_remote),
-            label: 'Remote',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.music_note_outlined),
-            selectedIcon: Icon(Icons.music_note),
-            label: 'Music',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.fiber_manual_record_outlined),
-            selectedIcon: Icon(Icons.fiber_manual_record),
-            label: 'Record',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.auto_awesome_outlined),
-            selectedIcon: Icon(Icons.auto_awesome),
-            label: 'Convert',
-          ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Custom Bottom Nav
+// ---------------------------------------------------------------------------
+class _BottomNav extends StatelessWidget {
+  final int selectedIndex;
+  final void Function(int) onTap;
+
+  const _BottomNav({required this.selectedIndex, required this.onTap});
+
+  static const _items = [
+    _NavItem(Icons.piano_outlined, Icons.piano, 'Simulator'),
+    _NavItem(Icons.settings_remote_outlined, Icons.settings_remote, 'Remote'),
+    _NavItem(Icons.music_note_outlined, Icons.music_note, 'Music'),
+    _NavItem(Icons.fiber_manual_record_outlined, Icons.fiber_manual_record, 'Record'),
+    _NavItem(Icons.auto_awesome_outlined, Icons.auto_awesome, 'Convert'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 58,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(color: Color(0x14000000), blurRadius: 8, offset: Offset(0, -2)),
         ],
+      ),
+      child: Row(
+        children: List.generate(_items.length, (i) {
+          final item = _items[i];
+          final isSelected = selectedIndex == i;
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => onTap(i),
+              behavior: HitTestBehavior.opaque,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? const Color(0xFFF8BBD0).withOpacity(0.6)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 200),
+                      child: Icon(
+                        isSelected ? item.selectedIcon : item.icon,
+                        key: ValueKey(isSelected),
+                        size: 20,
+                        color: isSelected
+                            ? const Color(0xFFAD1457)
+                            : Colors.grey.shade500,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      item.label,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight:
+                            isSelected ? FontWeight.w700 : FontWeight.normal,
+                        color: isSelected
+                            ? const Color(0xFFAD1457)
+                            : Colors.grey.shade500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }),
       ),
     );
   }
+}
+
+class _NavItem {
+  final IconData icon;
+  final IconData selectedIcon;
+  final String label;
+  const _NavItem(this.icon, this.selectedIcon, this.label);
 }
 
 // ---------------------------------------------------------------------------
@@ -329,45 +485,47 @@ Future<String> getGeminiKey() async {
   return prefs.getString('gemini_api_key') ?? '';
 }
 
-/// Maps note label → Firebase key under /angklung/
-/// Matches exact keys visible in the Realtime Database console.
 const Map<String, String> kNoteFirebaseKeys = {
-  'C':  'note1',  // 🎵 note the 'a' — as shown in your Firebase console
-  'D':  'note2',
-  'E':  'note3',
-  'F':  'note4',
-  'G':  'note5',
-  'A':  'note6',
-  'B':  'note7',
+  'C': 'note1',
+  'D': 'note2',
+  'E': 'note3',
+  'F': 'note4',
+  'G': 'note5',
+  'A': 'note6',
+  'B': 'note7',
   "C'": 'note8',
 };
 
 const List<String> kNotes = ['C', 'D', 'E', 'F', 'G', 'A', 'B', "C'"];
 
-const List<Color> kColors = [
-  Color(0xFFF8BBD0), // pink
-  Color(0xFFE1BEE7), // lavender
-  Color(0xFFBBDEFB), // sky blue
-  Color(0xFFC8E6C9), // mint
-  Color(0xFFFFF9C4), // lemon
-  Color(0xFFFFE0B2), // peach
-  Color(0xFFFFCDD2), // salmon
-  Color(0xFFD1C4E9), // lilac
+// Note symbols displayed inside each button
+const List<String> kNoteSymbols = ['♩', '♪', '♫', '♬', '♩', '♪', '♫', '♬'];
+
+// Richer gradient pairs per note
+const List<List<Color>> kNoteGradients = [
+  [Color(0xFFF8BBD0), Color(0xFFF48FB1)], // C – rose
+  [Color(0xFFE1BEE7), Color(0xFFCE93D8)], // D – lavender
+  [Color(0xFFBBDEFB), Color(0xFF90CAF9)], // E – sky
+  [Color(0xFFC8E6C9), Color(0xFFA5D6A7)], // F – mint
+  [Color(0xFFFFF9C4), Color(0xFFFFF176)], // G – lemon
+  [Color(0xFFFFE0B2), Color(0xFFFFCC80)], // A – peach
+  [Color(0xFFFFCDD2), Color(0xFFEF9A9A)], // B – salmon
+  [Color(0xFFD1C4E9), Color(0xFFB39DDB)], // C' – lilac
 ];
 
 // ---------------------------------------------------------------------------
-// Note button – fills its parent; supports tap or press/release
+// Enhanced NoteButton – gradient, scale animation, glow on hold
 // ---------------------------------------------------------------------------
 class NoteButton extends StatefulWidget {
   final String note;
-  final Color color;
+  final int noteIndex; // 0–7
   final VoidCallback? onTap;
   final void Function(bool pressed)? onPressedChanged;
 
   const NoteButton({
     super.key,
     required this.note,
-    required this.color,
+    required this.noteIndex,
     this.onTap,
     this.onPressedChanged,
   });
@@ -376,77 +534,180 @@ class NoteButton extends StatefulWidget {
   State<NoteButton> createState() => _NoteButtonState();
 }
 
-class _NoteButtonState extends State<NoteButton> {
+class _NoteButtonState extends State<NoteButton>
+    with SingleTickerProviderStateMixin {
   bool _pressed = false;
+  late final AnimationController _scaleCtrl;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _scaleCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 80),
+      reverseDuration: const Duration(milliseconds: 120),
+      lowerBound: 0.0,
+      upperBound: 1.0,
+      value: 1.0,
+    );
+    _scale = Tween<double>(begin: 0.88, end: 1.0).animate(
+      CurvedAnimation(parent: _scaleCtrl, curve: Curves.easeOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _scaleCtrl.dispose();
+    super.dispose();
+  }
+
+  void _setPressed(bool v) {
+    setState(() => _pressed = v);
+    if (v) {
+      _scaleCtrl.animateTo(0.0);
+    } else {
+      _scaleCtrl.animateTo(1.0);
+    }
+    widget.onPressedChanged?.call(v);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final pressedColor = HSLColor.fromColor(widget.color)
-        .withLightness(
-          (HSLColor.fromColor(widget.color).lightness - 0.12).clamp(0.0, 1.0),
-        )
-        .toColor();
+    final gradColors = kNoteGradients[widget.noteIndex];
+    final symbol = kNoteSymbols[widget.noteIndex];
 
-    final button = AnimatedContainer(
-      duration: const Duration(milliseconds: 70),
-      decoration: BoxDecoration(
-        color: _pressed ? pressedColor : widget.color,
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: _pressed
-            ? [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.10),
-                  blurRadius: 2,
-                  offset: const Offset(0, 1),
+    return GestureDetector(
+      onTapDown: (_) {
+        _setPressed(true);
+        if (widget.onPressedChanged == null) {
+          // tap-mode: fire onTap on release
+        }
+      },
+      onTapUp: (_) {
+        _setPressed(false);
+        widget.onTap?.call();
+      },
+      onTapCancel: () => _setPressed(false),
+      child: ScaleTransition(
+        scale: _scale,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 100),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: _pressed
+                  ? [
+                      gradColors[1],
+                      HSLColor.fromColor(gradColors[1])
+                          .withLightness(
+                            (HSLColor.fromColor(gradColors[1]).lightness - 0.1)
+                                .clamp(0.0, 1.0))
+                          .toColor(),
+                    ]
+                  : gradColors,
+            ),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: _pressed
+                ? [
+                    BoxShadow(
+                      color: gradColors[1].withOpacity(0.55),
+                      blurRadius: 12,
+                      spreadRadius: 2,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.14),
+                      blurRadius: 6,
+                      offset: const Offset(0, 3),
+                    ),
+                    BoxShadow(
+                      color: gradColors[1].withOpacity(0.3),
+                      blurRadius: 8,
+                      offset: const Offset(0, 1),
+                    ),
+                  ],
+            border: _pressed
+                ? Border.all(color: gradColors[1].withOpacity(0.7), width: 2)
+                : Border.all(color: Colors.white.withOpacity(0.6), width: 1.5),
+          ),
+          child: Stack(
+            children: [
+              // Background music symbol (decorative, top-right)
+              Positioned(
+                top: 3,
+                right: 6,
+                child: Text(
+                  symbol,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.white.withOpacity(_pressed ? 0.75 : 0.45),
+                  ),
                 ),
-              ]
-            : [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.18),
-                  blurRadius: 6,
-                  offset: const Offset(0, 3),
+              ),
+              // Note label centred
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      widget.note,
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: const Color(0xFF4A148C).withOpacity(0.85),
+                        height: 1,
+                        shadows: [
+                          Shadow(
+                            color: Colors.white.withOpacity(0.7),
+                            blurRadius: 4,
+                          ),
+                        ],
+                      ),
+                    ),
+                    // Solfège label
+                    Text(
+                      _solfege(widget.noteIndex),
+                      style: TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF6A1B9A).withOpacity(0.6),
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-      ),
-      child: Center(
-        child: Text(
-          widget.note,
-          style: const TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w700,
-            color: Color(0xFF5D4037),
+              ),
+              // Shimmer overlay when pressed
+              if (_pressed)
+                Positioned.fill(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.white.withOpacity(0.25),
+                          Colors.transparent,
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),
     );
+  }
 
-    if (widget.onPressedChanged != null) {
-      return GestureDetector(
-        onTapDown: (_) {
-          setState(() => _pressed = true);
-          widget.onPressedChanged?.call(true);
-        },
-        onTapUp: (_) {
-          setState(() => _pressed = false);
-          widget.onPressedChanged?.call(false);
-        },
-        onTapCancel: () {
-          setState(() => _pressed = false);
-          widget.onPressedChanged?.call(false);
-        },
-        child: button,
-      );
-    }
-
-    return GestureDetector(
-      onTapDown: (_) => setState(() => _pressed = true),
-      onTapUp: (_) {
-        setState(() => _pressed = false);
-        widget.onTap?.call();
-      },
-      onTapCancel: () => setState(() => _pressed = false),
-      child: button,
-    );
+  String _solfege(int i) {
+    const names = ['Do', 'Re', 'Mi', 'Fa', 'Sol', 'La', 'Si', 'Do\''];
+    return names[i];
   }
 }
 
@@ -469,13 +730,13 @@ class NoteGrid extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: rowNotes.asMap().entries.map((e) {
           final note = e.value;
-          final color = kColors[e.key + colorOffset];
+          final idx = e.key + colorOffset;
           return Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 5),
               child: NoteButton(
                 note: note,
-                color: color,
+                noteIndex: idx,
                 onTap: onTap != null ? () => onTap!(note) : null,
                 onPressedChanged: onPressedChanged != null
                     ? (p) => onPressedChanged!(note, p)
@@ -498,7 +759,79 @@ class NoteGrid extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// 1. SIMULATOR – tap to play sound locally
+// Floating music note particle (shows briefly when a note is pressed)
+// ---------------------------------------------------------------------------
+class _FloatingNoteOverlay extends StatefulWidget {
+  final String note;
+  final Color color;
+  const _FloatingNoteOverlay({required this.note, required this.color});
+
+  @override
+  State<_FloatingNoteOverlay> createState() => _FloatingNoteOverlayState();
+}
+
+class _FloatingNoteOverlayState extends State<_FloatingNoteOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _opacity;
+  late final Animation<double> _offset;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 700));
+    _opacity = TweenSequence([
+      TweenSequenceItem(tween: Tween(begin: 0.0, end: 1.0), weight: 20),
+      TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.0), weight: 80),
+    ]).animate(_ctrl);
+    _offset = Tween(begin: 0.0, end: -36.0)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+    _ctrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) => Opacity(
+        opacity: _opacity.value,
+        child: Transform.translate(
+          offset: Offset(0, _offset.value),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: widget.color.withOpacity(0.9),
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                    color: widget.color.withOpacity(0.5),
+                    blurRadius: 8,
+                    spreadRadius: 1),
+              ],
+            ),
+            child: Text(
+              '♪ ${widget.note}',
+              style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF4A148C)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. SIMULATOR – hold to loop, release to stop
 // ---------------------------------------------------------------------------
 class AngklungSimulator extends StatefulWidget {
   const AngklungSimulator({super.key});
@@ -507,20 +840,101 @@ class AngklungSimulator extends StatefulWidget {
 }
 
 class _AngklungSimulatorState extends State<AngklungSimulator> {
+  final Set<String> _heldNotes = {};
+  // Overlay entries for floating particles
+  final Map<String, OverlayEntry> _overlays = {};
+
+  void _onPressChanged(String note, bool pressed) {
+    if (pressed) {
+      setState(() => _heldNotes.add(note));
+      AudioService.instance.startLooping(note);
+      _showParticle(note);
+    } else {
+      setState(() => _heldNotes.remove(note));
+      AudioService.instance.stopNote(note);
+    }
+  }
+
+  void _showParticle(String note) {
+    // Simple: show a brief snackbar-style badge at top centre
+    // We'll manage this as a local overlay on the Simulator widget
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
-      child: NoteGrid(
-        onTap: (note) => AudioService.instance.play(note),
+    return Column(
+      children: [
+        // Hint banner
+        _SimulatorHintBar(heldNotes: _heldNotes),
+        // Grid
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+            child: NoteGrid(onPressedChanged: _onPressChanged),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SimulatorHintBar extends StatelessWidget {
+  final Set<String> heldNotes;
+  const _SimulatorHintBar({required this.heldNotes});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      height: 34,
+      margin: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: heldNotes.isNotEmpty
+              ? [const Color(0xFFF8BBD0), const Color(0xFFE1BEE7)]
+              : [const Color(0xFFFCE4EC), const Color(0xFFF3E5F5)],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.pinkAccent.withOpacity(0.1),
+            blurRadius: 6,
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          if (heldNotes.isEmpty) ...[
+            const Icon(Icons.touch_app_outlined,
+                size: 14, color: Color(0xFFAD1457)),
+            const SizedBox(width: 6),
+            const Text(
+              'Press & hold a note to play  •  Release to stop',
+              style: TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFFAD1457),
+                  fontWeight: FontWeight.w500),
+            ),
+          ] else ...[
+            const Icon(Icons.graphic_eq, size: 14, color: Color(0xFFAD1457)),
+            const SizedBox(width: 6),
+            Text(
+              'Playing:  ${heldNotes.join('  +  ')}',
+              style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFFAD1457),
+                  fontWeight: FontWeight.w700),
+            ),
+          ],
+        ],
       ),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// 2. REMOTE – sets angklung/nota1…note8 = true in Firebase
-//    (ESP32 resets to false after receiving)
+// 2. REMOTE
 // ---------------------------------------------------------------------------
 class RemoteController extends StatefulWidget {
   const RemoteController({super.key});
@@ -533,7 +947,6 @@ class _RemoteControllerState extends State<RemoteController> {
   bool _sending = false;
 
   Future<void> _sendNote(String note) async {
-    // Prevent spamming while a request is in flight
     if (_sending) return;
     setState(() {
       _sending = true;
@@ -550,9 +963,7 @@ class _RemoteControllerState extends State<RemoteController> {
         }
         return;
       }
-
       final firebaseKey = kNoteFirebaseKeys[note]!;
-      // PUT true → triggers ESP32 to play this note
       await http.put(
         Uri.parse('$baseUrl/angklung/$firebaseKey.json'),
         headers: {'Content-Type': 'application/json'},
@@ -573,56 +984,65 @@ class _RemoteControllerState extends State<RemoteController> {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Status bar
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-          child: Row(
-            children: [
-              const Icon(Icons.settings_remote, size: 16, color: Color(0xFFAD1457)),
-              const SizedBox(width: 6),
-              const Text(
-                'Remote → ESP32',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(width: 10),
-              if (_sending)
-                const SizedBox(
-                  width: 13,
-                  height: 13,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+          padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 12),
+          child: Container(
+            height: 34,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                  colors: [Color(0xFFFCE4EC), Color(0xFFF3E5F5)]),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.settings_remote,
+                    size: 15, color: Color(0xFFAD1457)),
+                const SizedBox(width: 6),
+                const Text(
+                  'Remote → ESP32',
+                  style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
                 ),
-              if (_lastSent != null && !_sending) ...[
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 250),
-                  child: Container(
-                    key: ValueKey(_lastSent),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF8BBD0),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      '✓ Sent: $_lastSent  →  ${kNoteFirebaseKeys[_lastSent!]}',
-                      style: const TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w600),
+                const SizedBox(width: 10),
+                if (_sending)
+                  const SizedBox(
+                    width: 13,
+                    height: 13,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                if (_lastSent != null && !_sending) ...[
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 250),
+                    child: Container(
+                      key: ValueKey(_lastSent),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8BBD0),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        '✓ Sent: $_lastSent  →  ${kNoteFirebaseKeys[_lastSent!]}',
+                        style: const TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.w600),
+                      ),
                     ),
                   ),
+                ],
+                const Spacer(),
+                Text(
+                  'Sets true → ESP32 resets',
+                  style: TextStyle(
+                      fontSize: 10, color: Colors.grey.shade500),
                 ),
               ],
-              const Spacer(),
-              Text(
-                'Sets true → ESP32 resets',
-                style: TextStyle(
-                    fontSize: 11, color: Colors.grey.shade500),
-              ),
-            ],
+            ),
           ),
         ),
-        // Note grid
         Expanded(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
             child: NoteGrid(onTap: _sendNote),
           ),
         ),
@@ -632,7 +1052,7 @@ class _RemoteControllerState extends State<RemoteController> {
 }
 
 // ---------------------------------------------------------------------------
-// 3. MUSIC PAGE – one-tap play for predefined songs + stop
+// 3. MUSIC PAGE
 // ---------------------------------------------------------------------------
 class MusicPage extends StatefulWidget {
   const MusicPage({super.key});
@@ -644,42 +1064,41 @@ class _MusicPageState extends State<MusicPage> {
   String? _activeSong;
   bool _sending = false;
 
-  // Predefined songs – key matches exact Firebase field name
   static const List<Map<String, dynamic>> _songs = [
     {
       'key': 'playPusaka',
       'label': 'Pusaka',
       'subtitle': 'Tanah Airku',
       'emoji': '🇮🇩',
-      'color': Color(0xFFFFCDD2),
+      'gradient': [Color(0xFFFFCDD2), Color(0xFFEF9A9A)],
     },
     {
       'key': 'playRaya',
       'label': 'Raya',
       'subtitle': 'Indonesia Raya',
       'emoji': '🎌',
-      'color': Color(0xFFF8BBD0),
+      'gradient': [Color(0xFFF8BBD0), Color(0xFFF48FB1)],
     },
     {
       'key': 'playHalo',
       'label': 'Halo-Halo',
       'subtitle': 'Halo-Halo Bandung',
       'emoji': '🌆',
-      'color': Color(0xFFE1BEE7),
+      'gradient': [Color(0xFFE1BEE7), Color(0xFFCE93D8)],
     },
     {
       'key': 'playKartini',
       'label': 'Kartini',
       'subtitle': 'Ibu Kita Kartini',
       'emoji': '👗',
-      'color': Color(0xFFBBDEFB),
+      'gradient': [Color(0xFFBBDEFB), Color(0xFF90CAF9)],
     },
     {
       'key': 'playKetut',
       'label': 'Ketut',
       'subtitle': 'Custom song',
       'emoji': '🎵',
-      'color': Color(0xFFC8E6C9),
+      'gradient': [Color(0xFFC8E6C9), Color(0xFFA5D6A7)],
     },
   ];
 
@@ -689,7 +1108,6 @@ class _MusicPageState extends State<MusicPage> {
       _sending = true;
       _activeSong = songKey;
     });
-
     try {
       final baseUrl = await getDatabaseUrl();
       if (baseUrl.isEmpty) {
@@ -700,14 +1118,11 @@ class _MusicPageState extends State<MusicPage> {
         }
         return;
       }
-
-      // PUT true to the song key under /angklung/
       await http.put(
         Uri.parse('$baseUrl/angklung/$songKey.json'),
         headers: {'Content-Type': 'application/json'},
         body: 'true',
       );
-
       final song = _songs.firstWhere((s) => s['key'] == songKey);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -733,7 +1148,6 @@ class _MusicPageState extends State<MusicPage> {
       _sending = true;
       _activeSong = null;
     });
-
     try {
       final baseUrl = await getDatabaseUrl();
       if (baseUrl.isEmpty) return;
@@ -761,26 +1175,26 @@ class _MusicPageState extends State<MusicPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header row
           Row(
             children: [
               const Icon(Icons.music_note, size: 16, color: Color(0xFFAD1457)),
               const SizedBox(width: 6),
               const Text(
                 'Play Music on ESP32',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                style:
+                    TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
               ),
               const Spacer(),
-              // Stop button
               ElevatedButton.icon(
                 onPressed: _sending ? null : _stop,
                 icon: const Icon(Icons.stop_circle_outlined, size: 16),
-                label: const Text('Stop', style: TextStyle(fontSize: 12)),
+                label:
+                    const Text('Stop', style: TextStyle(fontSize: 12)),
                 style: ElevatedButton.styleFrom(
                   foregroundColor: Colors.red.shade700,
                   backgroundColor: Colors.red.shade50,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 5),
                   minimumSize: Size.zero,
                   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
@@ -796,12 +1210,11 @@ class _MusicPageState extends State<MusicPage> {
             ],
           ),
           const SizedBox(height: 8),
-
-          // Song cards – 3 columns grid (works well in landscape)
           Expanded(
             child: GridView.builder(
               physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              gridDelegate:
+                  const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 3,
                 crossAxisSpacing: 10,
                 mainAxisSpacing: 10,
@@ -812,32 +1225,41 @@ class _MusicPageState extends State<MusicPage> {
                 final song = _songs[i];
                 final key = song['key'] as String;
                 final isActive = _activeSong == key;
+                final gradColors = song['gradient'] as List<Color>;
 
                 return GestureDetector(
                   onTap: _sending ? null : () => _triggerSong(key),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 150),
                     decoration: BoxDecoration(
-                      color: isActive
-                          ? HSLColor.fromColor(song['color'] as Color)
-                              .withLightness(0.72)
-                              .toColor()
-                          : song['color'] as Color,
+                      gradient: LinearGradient(
+                        colors: isActive
+                            ? [
+                                gradColors[1],
+                                gradColors[0],
+                              ]
+                            : gradColors,
+                      ),
                       borderRadius: BorderRadius.circular(14),
                       border: isActive
                           ? Border.all(
                               color: Colors.deepOrange.shade400, width: 2)
-                          : null,
+                          : Border.all(
+                              color: Colors.white.withOpacity(0.6),
+                              width: 1.5),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(isActive ? 0.08 : 0.14),
-                          blurRadius: isActive ? 2 : 5,
-                          offset: Offset(0, isActive ? 1 : 3),
+                          color: gradColors[1]
+                              .withOpacity(isActive ? 0.4 : 0.25),
+                          blurRadius: isActive ? 10 : 5,
+                          offset:
+                              Offset(0, isActive ? 2 : 3),
                         ),
                       ],
                     ),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 12),
                       child: Row(
                         children: [
                           Text(song['emoji'] as String,
@@ -845,22 +1267,24 @@ class _MusicPageState extends State<MusicPage> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment:
+                                  MainAxisAlignment.center,
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
                               children: [
                                 Text(
                                   song['label'] as String,
                                   style: const TextStyle(
                                     fontSize: 14,
                                     fontWeight: FontWeight.w700,
-                                    color: Color(0xFF5D4037),
+                                    color: Color(0xFF4A148C),
                                   ),
                                 ),
                                 Text(
                                   song['subtitle'] as String,
                                   style: const TextStyle(
                                     fontSize: 10,
-                                    color: Color(0xFF8D6E63),
+                                    color: Color(0xFF6A1B9A),
                                   ),
                                 ),
                               ],
@@ -884,7 +1308,7 @@ class _MusicPageState extends State<MusicPage> {
 }
 
 // ---------------------------------------------------------------------------
-// 4. RECORDER – press/release, auto rests, sends [noteIndex, duration] pairs
+// 4. RECORDER
 // ---------------------------------------------------------------------------
 class RecorderPage extends StatefulWidget {
   const RecorderPage({super.key});
@@ -982,7 +1406,6 @@ class _RecorderPageState extends State<RecorderPage> {
       _paused = false;
     });
     if (_sequence.isEmpty) return;
-
     final url = await getDatabaseUrl();
     if (url.isNotEmpty) {
       final uri = Uri.parse('$url/recordings.json');
@@ -1020,19 +1443,18 @@ class _RecorderPageState extends State<RecorderPage> {
     final noteIndex = kNotes.indexOf(_pressedNote!) + 1;
     final pressTime = _pressTime!;
     final now = DateTime.now();
-
     double durationSec =
         now.difference(pressTime).inMilliseconds / 1000.0;
     if (durationSec < _minDurationSec) durationSec = _minDurationSec;
-
     final gapSec =
         pressTime.difference(_lastEventEndTime!).inMilliseconds / 1000.0;
     if (gapSec > 0.01) {
       _sequence.add([0, double.parse(gapSec.toStringAsFixed(2))]);
     }
-    _sequence.add([noteIndex, double.parse(durationSec.toStringAsFixed(2))]);
-    _lastEventEndTime =
-        pressTime.add(Duration(milliseconds: (durationSec * 1000).round()));
+    _sequence.add(
+        [noteIndex, double.parse(durationSec.toStringAsFixed(2))]);
+    _lastEventEndTime = pressTime
+        .add(Duration(milliseconds: (durationSec * 1000).round()));
     setState(() {});
   }
 
@@ -1054,18 +1476,31 @@ class _RecorderPageState extends State<RecorderPage> {
     final isCountingDown = _countdown > 0;
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
+        Container(
+          height: 40,
+          margin: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: _recording && !_paused
+                  ? [
+                      Colors.red.shade50,
+                      Colors.pink.shade50,
+                    ]
+                  : [const Color(0xFFFCE4EC), const Color(0xFFF3E5F5)],
+            ),
+            borderRadius: BorderRadius.circular(20),
+          ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               SizedBox(
-                width: 100,
+                width: 90,
                 child: Text(
                   isCountingDown ? '$_countdown' : _formatMs(_elapsedMs),
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: isCountingDown ? 40 : 28,
+                    fontSize: isCountingDown ? 34 : 22,
                     fontWeight: FontWeight.bold,
                     color: _recording && !_paused
                         ? Colors.redAccent
@@ -1073,7 +1508,7 @@ class _RecorderPageState extends State<RecorderPage> {
                   ),
                 ),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 8),
               if (!_recording && !isCountingDown)
                 _CtrlButton(
                   icon: Icons.fiber_manual_record,
@@ -1087,13 +1522,13 @@ class _RecorderPageState extends State<RecorderPage> {
                   label: _paused ? 'Resume' : 'Pause',
                   onPressed: _pauseResume,
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 6),
                 _CtrlButton(
                   icon: Icons.refresh,
                   label: 'Reset',
                   onPressed: _reset,
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 6),
                 _CtrlButton(
                   icon: Icons.stop_circle,
                   label: 'Stop & Send',
@@ -1101,10 +1536,10 @@ class _RecorderPageState extends State<RecorderPage> {
                   onPressed: _stopAndSend,
                 ),
               ],
-              const SizedBox(width: 16),
+              const SizedBox(width: 12),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color: const Color(0xFFF8BBD0),
                   borderRadius: BorderRadius.circular(20),
@@ -1112,7 +1547,7 @@ class _RecorderPageState extends State<RecorderPage> {
                 child: Text(
                   '${_sequence.length} events',
                   style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
+                      fontSize: 12, fontWeight: FontWeight.w600),
                 ),
               ),
             ],
@@ -1120,7 +1555,7 @@ class _RecorderPageState extends State<RecorderPage> {
         ),
         Expanded(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
             child: NoteGrid(onPressedChanged: _onNotePressState),
           ),
         ),
@@ -1146,26 +1581,20 @@ class _CtrlButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return ElevatedButton.icon(
       style: ElevatedButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         minimumSize: Size.zero,
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         foregroundColor: color,
       ),
       onPressed: onPressed,
-      icon: Icon(icon, size: 18),
-      label: Text(label, style: const TextStyle(fontSize: 13)),
+      icon: Icon(icon, size: 16),
+      label: Text(label, style: const TextStyle(fontSize: 12)),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// 5. SONG CONVERTER – YouTube URL → Gemini AI → angklung sequence → Firebase
-//
-// Sequence format: [[noteIndex, durationSeconds], ...]
-//   noteIndex: 0=rest, 1=C, 2=D, 3=E, 4=F, 5=G, 6=A, 7=B, 8=C'
-//   durationSeconds: e.g. 0.25, 0.5, 1.0, 2.0
-//
-// Saved at: songs/<firebaseGeneratedId>/
+// 5. SONG CONVERTER
 // ---------------------------------------------------------------------------
 class SongConverterPage extends StatefulWidget {
   const SongConverterPage({super.key});
@@ -1183,14 +1612,12 @@ class _SongConverterPageState extends State<SongConverterPage> {
   List<List<dynamic>>? _sequence;
   String? _savedId;
 
-  // ── Call Gemini API with Google Search tool to identify song + make sequence ──
   Future<void> _convert() async {
     final ytUrl = _urlController.text.trim();
     if (ytUrl.isEmpty) {
       setState(() => _error = 'Please enter a YouTube URL');
       return;
     }
-
     setState(() {
       _converting = true;
       _error = null;
@@ -1198,7 +1625,6 @@ class _SongConverterPageState extends State<SongConverterPage> {
       _savedId = null;
       _statusMessage = 'Identifying song via Gemini…';
     });
-
     try {
       final apiKey = await getGeminiKey();
       if (apiKey.isEmpty) {
@@ -1208,14 +1634,10 @@ class _SongConverterPageState extends State<SongConverterPage> {
         });
         return;
       }
-
-      // First call: identify the song + generate sequence using Gemini with Google Search
       final response = await http.post(
         Uri.parse(
             'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'contents': [
             {
@@ -1263,57 +1685,46 @@ Example:
             }
           ],
           'tools': [
-            {
-              'googleSearch': {} // Enables Google Search grounding for accurate song lookups
-            }
+            {'googleSearch': {}}
           ]
         }),
       );
-
       setState(() => _statusMessage = 'Processing response…');
-
       if (response.statusCode != 200) {
         final errBody = utf8.decode(response.bodyBytes);
         Map<String, dynamic>? errJson;
         try {
           errJson = jsonDecode(errBody) as Map<String, dynamic>;
         } catch (_) {}
-        final msg = errJson?['error']?['message'] ?? 'HTTP ${response.statusCode}';
+        final msg =
+            errJson?['error']?['message'] ?? 'HTTP ${response.statusCode}';
         setState(() => _error = 'API error: $msg');
         return;
       }
-
-      final data = jsonDecode(utf8.decode(response.bodyBytes))
-          as Map<String, dynamic>;
-
+      final data =
+          jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       String? rawText;
       try {
-        // Extract the text block from Gemini's response
-        rawText = data['candidates'][0]['content']['parts'][0]['text'] as String;
+        rawText =
+            data['candidates'][0]['content']['parts'][0]['text'] as String;
       } catch (e) {
         setState(() => _error = 'No valid text response from AI.');
         return;
       }
-
       if (rawText.isEmpty) {
         setState(() => _error = 'No text response from AI.');
         return;
       }
-
-      // Strip any accidental markdown fences
       final cleaned = rawText
           .replaceAll('```json', '')
           .replaceAll('```', '')
           .trim();
-
-      // Find the JSON array in the response (handles extra text before/after)
       final match = RegExp(r'\[[\s\S]*\]').firstMatch(cleaned);
       if (match == null) {
         setState(() =>
             _error = 'Could not parse JSON array from response:\n\n$rawText');
         return;
       }
-
       List<List<dynamic>> parsed;
       try {
         final raw = jsonDecode(match.group(0)!) as List<dynamic>;
@@ -1323,11 +1734,10 @@ Example:
                 .toList())
             .toList();
       } catch (e) {
-        setState(() => _error = 'JSON parse error: $e\n\n${match.group(0)}');
+        setState(
+            () => _error = 'JSON parse error: $e\n\n${match.group(0)}');
         return;
       }
-
-      // Auto-fill song name from text before the array (if short enough)
       if (_nameController.text.isEmpty) {
         final before = cleaned.substring(0, match.start).trim();
         if (before.isNotEmpty && before.length < 120) {
@@ -1337,7 +1747,6 @@ Example:
               .trim();
         }
       }
-
       setState(() {
         _sequence = parsed;
         _statusMessage = null;
@@ -1349,42 +1758,33 @@ Example:
     }
   }
 
-// ── Save sequence to Firebase at songs/<auto-id> ──────────────────────────
   Future<void> _saveToFirebase() async {
     if (_sequence == null) return;
     setState(() {
       _saving = true;
       _savedId = null;
     });
-
     try {
       final baseUrl = await getDatabaseUrl();
       if (baseUrl.isEmpty) {
         setState(() => _error = 'Firebase URL not configured');
         return;
       }
-
-      // Convert the List of Lists into a single formatted string: "{1,1},{2,0.5}..."
-      final String flatSequence = _sequence!.map((e) {
-        return '{${e[0]},${e[1]}}';
-      }).join(',');
-
+      final String flatSequence =
+          _sequence!.map((e) => '{${e[0]},${e[1]}}').join(',');
       final payload = jsonEncode({
         'name': _nameController.text.trim().isNotEmpty
             ? _nameController.text.trim()
             : 'Unknown Song',
         'source': _urlController.text.trim(),
-        'sequence': flatSequence, // Send the single string here!
+        'sequence': flatSequence,
         'createdAt': DateTime.now().millisecondsSinceEpoch,
       });
-
-      // POST → Firebase generates a unique push ID (e.g. -NxAbc123)
       final response = await http.post(
         Uri.parse('$baseUrl/songs.json'),
         headers: {'Content-Type': 'application/json'},
         body: payload,
       );
-
       if (response.statusCode == 200) {
         final responseData =
             jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
@@ -1399,7 +1799,8 @@ Example:
           );
         }
       } else {
-        setState(() => _error = 'Firebase save failed: ${response.statusCode}');
+        setState(
+            () => _error = 'Firebase save failed: ${response.statusCode}');
       }
     } catch (e) {
       setState(() => _error = 'Save error: $e');
@@ -1407,7 +1808,7 @@ Example:
       if (mounted) setState(() => _saving = false);
     }
   }
-  // ── Preview: human-readable note names ────────────────────────────────────
+
   String _buildPreview(List<List<dynamic>> seq) {
     const noteNames = ['—', 'C', 'D', 'E', 'F', 'G', 'A', 'B', "C'"];
     return seq.map((e) {
@@ -1431,7 +1832,6 @@ Example:
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Header ──────────────────────────────────────────────────────
           Row(
             children: [
               const Icon(Icons.auto_awesome,
@@ -1439,18 +1839,18 @@ Example:
               const SizedBox(width: 6),
               const Text(
                 'YouTube → Angklung Sequence',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                    fontSize: 14, fontWeight: FontWeight.bold),
               ),
               const Spacer(),
               Text(
                 'Saves to  songs/<id>',
-                style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+                style: TextStyle(
+                    fontSize: 11, color: Colors.grey.shade500),
               ),
             ],
           ),
           const SizedBox(height: 10),
-
-          // ── URL input ────────────────────────────────────────────────────
           Row(
             children: [
               Expanded(
@@ -1467,6 +1867,8 @@ Example:
                     contentPadding: const EdgeInsets.symmetric(
                         vertical: 10, horizontal: 10),
                     isDense: true,
+                    filled: true,
+                    fillColor: Colors.white.withOpacity(0.8),
                   ),
                 ),
               ),
@@ -1476,14 +1878,16 @@ Example:
                 child: TextField(
                   controller: _nameController,
                   style: const TextStyle(fontSize: 13),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Song name',
-                    labelStyle: TextStyle(fontSize: 13),
-                    prefixIcon: Icon(Icons.music_note, size: 18),
-                    border: OutlineInputBorder(),
-                    contentPadding:
-                        EdgeInsets.symmetric(vertical: 10, horizontal: 10),
+                    labelStyle: const TextStyle(fontSize: 13),
+                    prefixIcon: const Icon(Icons.music_note, size: 18),
+                    border: const OutlineInputBorder(),
+                    contentPadding: const EdgeInsets.symmetric(
+                        vertical: 10, horizontal: 10),
                     isDense: true,
+                    filled: true,
+                    fillColor: Colors.white.withOpacity(0.8),
                   ),
                 ),
               ),
@@ -1509,8 +1913,6 @@ Example:
               ),
             ],
           ),
-
-          // ── Status / Error ───────────────────────────────────────────────
           if (_statusMessage != null && _converting) ...[
             const SizedBox(height: 6),
             Row(
@@ -1521,7 +1923,8 @@ Example:
                     child: CircularProgressIndicator(strokeWidth: 2)),
                 const SizedBox(width: 8),
                 Text(_statusMessage!,
-                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                    style: const TextStyle(
+                        fontSize: 12, color: Colors.grey)),
               ],
             ),
           ],
@@ -1536,12 +1939,11 @@ Example:
               ),
               child: Text(
                 _error!,
-                style: TextStyle(fontSize: 12, color: Colors.red.shade800),
+                style: TextStyle(
+                    fontSize: 12, color: Colors.red.shade800),
               ),
             ),
           ],
-
-          // ── Result ───────────────────────────────────────────────────────
           if (_sequence != null) ...[
             const SizedBox(height: 10),
             Container(
@@ -1549,12 +1951,12 @@ Example:
               decoration: BoxDecoration(
                 color: const Color(0xFFF8BBD0).withOpacity(0.25),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFF8BBD0)),
+                border:
+                    Border.all(color: const Color(0xFFF8BBD0)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Stats row
                   Row(
                     children: [
                       const Icon(Icons.check_circle,
@@ -1563,7 +1965,8 @@ Example:
                       Text(
                         '${_sequence!.length} events generated',
                         style: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w600),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600),
                       ),
                       const SizedBox(width: 12),
                       Text(
@@ -1574,10 +1977,9 @@ Example:
                     ],
                   ),
                   const SizedBox(height: 8),
-
-                  // Human-readable preview
                   Container(
-                    constraints: const BoxConstraints(maxHeight: 56),
+                    constraints:
+                        const BoxConstraints(maxHeight: 56),
                     width: double.infinity,
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
@@ -1588,15 +1990,15 @@ Example:
                       child: Text(
                         _buildPreview(_sequence!),
                         style: const TextStyle(
-                            fontSize: 11, fontFamily: 'monospace'),
+                            fontSize: 11,
+                            fontFamily: 'monospace'),
                       ),
                     ),
                   ),
                   const SizedBox(height: 6),
-
-                  // Raw JSON
                   Container(
-                    constraints: const BoxConstraints(maxHeight: 42),
+                    constraints:
+                        const BoxConstraints(maxHeight: 42),
                     width: double.infinity,
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
@@ -1617,8 +2019,6 @@ Example:
               ),
             ),
             const SizedBox(height: 8),
-
-            // ── Save button ───────────────────────────────────────────────
             Row(
               children: [
                 Expanded(
@@ -1628,16 +2028,20 @@ Example:
                         ? const SizedBox(
                             width: 16,
                             height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2))
+                            child:
+                                CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.cloud_upload, size: 16),
                     label: Text(
-                      _saving ? 'Saving…' : 'Save to Firebase  (songs/)',
+                      _saving
+                          ? 'Saving…'
+                          : 'Save to Firebase  (songs/)',
                       style: const TextStyle(fontSize: 13),
                     ),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green.shade50,
                       foregroundColor: Colors.green.shade800,
-                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      padding:
+                          const EdgeInsets.symmetric(vertical: 10),
                     ),
                   ),
                 ),
